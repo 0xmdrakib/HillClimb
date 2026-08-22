@@ -2,7 +2,7 @@
 
 Jesse Hill Climb is a physics-based hill climb racing game built as a Base Mini App and web app, with optional onchain score saving and run NFT minting on Base.
 
-**Live app:** https://jessehillclimb.online
+**Live app:** https://hillclimb.rakibhq.xyz
 
 ---
 
@@ -85,45 +85,7 @@ If the connected wallet supports paymaster services and the paymaster proxy is c
 - Farcaster Mini App SDK
 - Solidity
 - Base mainnet
-- Pinata/IPFS
-
----
-
-## Getting started
-
-### 1. Install dependencies
-
-```bash
-npm install
-```
-
-### 2. Configure environment variables
-
-Create a `.env` file in the project root. Then copy the values from [.env.example](./.env.example) and fill them in.
-
-### 3. Run the development server
-
-```bash
-npm run dev
-```
-
-Open `http://localhost:3000` in your browser.
-
-### 4. Build for production
-
-```bash
-npm run build
-npm run start
-```
-
-## Contracts
-
-The project includes two Solidity contracts:
-
-- `JesseHillClimbScoreboard.sol` — stores the best score per wallet
-- `JesseHillClimbRunNFT.sol` — mints collectible run NFTs with score and driver metadata
-
-Deploy both contracts on Base mainnet, then add the deployed addresses to `.env`.
+- IPFS
 
 ---
 
