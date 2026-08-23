@@ -146,28 +146,23 @@ function WalletPickerModal({
       <div className="walletCard" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="wallet-picker-title">
         <div className="walletCardTop">
           <div>
-            <div className="walletEyebrow">SECURE CONNECTION</div>
-            <div id="wallet-picker-title" className="walletTitle">Connect wallet</div>
-            <div className="walletSubtitle">Choose an installed wallet or scan with WalletConnect.</div>
+            <div id="wallet-picker-title" className="walletTitle">Choose wallet</div>
+            <div className="walletSubtitle">{choices.length > 1 ? "Multiple browser wallets detected. Pick one to use on Base." : "Pick a wallet to use on Base."}</div>
           </div>
-          <button type="button" className="driverClose" onClick={onClose} aria-label="Close">✕</button>
         </div>
         <div className="walletList">
-          <button type="button" className="walletRow walletConnectRow" disabled={connectBusy || !walletConnectReady} onClick={onWalletConnect}>
-            <span className="walletIcon walletConnectIcon"><WalletConnectIcon /></span>
-            <span className="walletRowMain"><strong>WalletConnect</strong><small>{walletConnectReady ? "Scan QR or choose from 240+ wallets" : "Add a WalletConnect project ID to enable"}</small></span>
-            <span className="walletChevron" aria-hidden="true">›</span>
-          </button>
-          {choices.length ? <div className="walletSectionLabel"><span>Browser wallets</span></div> : null}
           {choices.map(w => (
             <button key={w.id} type="button" className="walletRow" disabled={connectBusy} onClick={() => onSelect(w)}>
               {w.icon ? <img className="walletIcon" src={w.icon} alt="" /> : <span className="walletIcon walletIconFallback">◆</span>}
-              <span className="walletRowMain"><strong>{w.name}</strong><small>Installed browser wallet</small></span>
-              <span className="walletChevron" aria-hidden="true">›</span>
+              <span className="walletName">{w.name}</span>
             </button>
           ))}
+          <button type="button" className="walletRow walletConnectRow" disabled={connectBusy || !walletConnectReady} onClick={onWalletConnect}>
+            <span className="walletIcon walletConnectIcon"><WalletConnectIcon /></span>
+            <span className="walletName">WalletConnect</span>
+          </button>
         </div>
-        <div className="walletHint"><span className="walletHintDot" />Your keys stay inside your wallet.</div>
+        <button type="button" className="walletCancel" disabled={connectBusy} onClick={onClose}>Cancel</button>
       </div>
     </div>
   );

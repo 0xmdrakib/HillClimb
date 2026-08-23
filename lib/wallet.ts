@@ -117,13 +117,13 @@ function compactWalletKey(value: string) {
 
 function providerFlagKey(provider: any): string | null {
   if (!provider) return null;
-  if (provider.isMetaMask) return "metamask";
-  if (provider.isCoinbaseWallet) return "coinbasewallet";
   if (provider.isRabby) return "rabbywallet";
   if (provider.isBackpack) return "backpack";
   if (provider.isPhantom) return "phantom";
   if (provider.isKeplr) return "keplr";
   if (provider.isSubWallet) return "subwallet";
+  if (provider.isCoinbaseWallet) return "coinbasewallet";
+  if (provider.isMetaMask) return "metamask";
   return null;
 }
 
@@ -144,12 +144,12 @@ function walletIdentityKeys(wallet: InjectedWallet): string[] {
   const rdns = compactWalletKey(wallet.rdns ?? "");
   if (rdns) keys.add(`rdns:${rdns}`);
 
-  const flag = providerFlagKey(wallet.provider as any);
   const rdnsBrand = knownWalletBrand(wallet.rdns ?? "");
   const nameBrand = knownWalletBrand(wallet.name);
-  for (const brand of [flag, rdnsBrand, nameBrand]) {
-    if (brand) keys.add(`brand:${brand}`);
-  }
+  const declaredBrand = rdnsBrand ?? nameBrand;
+  const fallbackBrand = providerFlagKey(wallet.provider as any);
+  if (declaredBrand) keys.add(`brand:${declaredBrand}`);
+  else if (fallbackBrand) keys.add(`brand:${fallbackBrand}`);
 
   const name = compactWalletKey(wallet.name);
   if (name && name !== "injectedwallet" && name !== "wallet") keys.add(`name:${name}`);
@@ -193,13 +193,13 @@ function walletIdFromEip6963(info: EIP6963ProviderInfo): string {
 }
 
 function fallbackWalletLabel(p: any) {
-  if (p?.isMetaMask) return "MetaMask";
-  if (p?.isCoinbaseWallet) return "Coinbase Wallet";
   if (p?.isRabby) return "Rabby Wallet";
   if (p?.isKeplr) return "Keplr";
   if (p?.isSubWallet) return "SubWallet";
   if (p?.isPhantom) return "Phantom";
   if (p?.isBackpack) return "Backpack";
+  if (p?.isCoinbaseWallet) return "Coinbase Wallet";
+  if (p?.isMetaMask) return "MetaMask";
   return "Injected wallet";
 }
 

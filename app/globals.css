@@ -1228,7 +1228,7 @@ html, body{
   pointer-events:auto;
   position:fixed;
   inset:0;
-  background:rgba(18,15,10,.24);
+  background:rgba(31,38,50,.28);
   display:flex;
   align-items:center;
   justify-content:center;
@@ -1242,74 +1242,69 @@ html, body{
   z-index:80;
 }
 .walletCard{
-  width:min(430px, calc(100% - 24px));
-  max-height:min(690px, calc(100dvh - 40px - var(--safe-top) - var(--safe-bottom)));
+  width:min(400px, calc(100% - 24px));
+  max-height:min(720px, calc(100dvh - 40px - var(--safe-top) - var(--safe-bottom)));
   overflow:auto;
-  background:#fffdf9;
-  border:1px solid rgba(42,31,14,.11);
-  border-radius:24px;
-  box-shadow:0 20px 52px rgba(24,18,10,.20),0 2px 8px rgba(24,18,10,.08);
-  padding:18px;
+  background:#fbfaf5;
+  border:1px solid rgba(255,255,255,.85);
+  border-radius:28px;
+  box-shadow:0 18px 56px rgba(15,23,42,.16);
+  padding:24px 20px 18px;
 }
-.walletCardTop{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:16px}
-.walletEyebrow{margin-bottom:5px;color:#9a742b;font-size:9px;line-height:1;font-weight:1000;letter-spacing:1.35px}
-.walletTitle{font-weight:1000;letter-spacing:.1px;color:#201a12;font-size:21px;line-height:1.05}
-.walletSubtitle{margin-top:6px;font-size:12px;font-weight:700;color:rgba(42,31,14,.56)}
-.walletCard .driverClose{
-  flex:0 0 auto;
-  width:36px;
-  height:36px;
-  border-radius:999px;
-  border:1px solid rgba(42,31,14,.10);
-  background:#fff;
-  color:#2a1f0e;
-  box-shadow:0 3px 10px rgba(42,31,14,.06);
-}
-.walletList{display:flex;flex-direction:column;gap:8px}
+.walletCardTop{margin-bottom:14px;padding:0 4px}
+.walletTitle{font-weight:900;letter-spacing:-.2px;color:#182238;font-size:18px;line-height:1.2}
+.walletSubtitle{margin-top:7px;max-width:330px;font-size:12px;line-height:1.75;font-weight:600;color:#66758f}
+.walletList{display:flex;flex-direction:column;gap:9px}
 .walletRow{
   appearance:none;
   cursor:pointer;
-  border-radius:17px;
-  border:1px solid rgba(42,31,14,.10);
-  background:linear-gradient(180deg,#fff,#fbf8f2);
-  min-height:62px;
-  padding:10px 11px;
+  border-radius:18px;
+  border:1px solid #dfe5ed;
+  background:rgba(255,255,255,.72);
+  min-height:66px;
+  padding:10px 14px;
   display:flex;
   align-items:center;
   gap:12px;
   text-align:left;
-  color:#16120d;
+  color:#2d3c55;
   font-family:inherit;
   font-size:14px;
-  box-shadow:0 3px 10px rgba(42,31,14,.035);
+  box-shadow:none;
   transition:transform .14s ease,border-color .14s ease,background .14s ease,box-shadow .14s ease;
 }
-.walletRow:hover{background:#fff;border-color:rgba(184,137,44,.38);box-shadow:0 9px 24px rgba(42,31,14,.085);transform:translateY(-1px)}
+.walletRow:hover{background:#fff;border-color:#c8d3e2;box-shadow:0 8px 20px rgba(41,55,78,.07);transform:translateY(-1px)}
 .walletRow:active{transform:translateY(1px)}
 .walletRow:disabled{opacity:.62;cursor:default;transform:none}
-.walletConnectRow{border-color:rgba(51,150,255,.25);background:linear-gradient(135deg,rgba(51,150,255,.10),rgba(255,255,255,.95) 62%)}
-.walletConnectRow:hover{border-color:rgba(51,150,255,.48);box-shadow:0 10px 26px rgba(51,150,255,.13)}
+.walletConnectRow{background:rgba(255,255,255,.72)}
+.walletConnectRow:hover{border-color:#a8ccef;box-shadow:0 8px 20px rgba(51,150,255,.09)}
 .walletIcon{
-  width:38px;
-  height:38px;
-  border-radius:11px;
-  background:rgba(42,31,14,.05);
-  border:1px solid rgba(42,31,14,.08);
+  width:40px;
+  height:40px;
+  border-radius:12px;
+  background:#fff;
+  border:1px solid #e6eaf0;
   object-fit:cover;
   flex:0 0 auto;
 }
 .walletConnectIcon{border:0;background:#3396ff;overflow:hidden}
 .walletConnectIcon svg{display:block;width:100%;height:100%}
-.walletIconFallback{display:inline-flex;align-items:center;justify-content:center;color:#b8892c;font-size:13px}
-.walletRowMain{min-width:0;flex:1;display:flex;flex-direction:column;gap:2px}
-.walletRowMain strong{overflow:hidden;color:#201a12;font-size:14px;line-height:1.15;font-weight:1000;text-overflow:ellipsis;white-space:nowrap}
-.walletRowMain small{overflow:hidden;color:rgba(42,31,14,.48);font-size:10px;line-height:1.2;font-weight:800;text-overflow:ellipsis;white-space:nowrap}
-.walletChevron{width:25px;height:25px;flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;border-radius:999px;background:rgba(42,31,14,.045);color:rgba(42,31,14,.48);font-size:22px;font-weight:500;line-height:1}
-.walletSectionLabel{display:flex;align-items:center;gap:10px;padding:5px 3px 1px;color:rgba(42,31,14,.42);font-size:9px;font-weight:1000;letter-spacing:.9px;text-transform:uppercase}
-.walletSectionLabel::before,.walletSectionLabel::after{content:"";height:1px;flex:1;background:rgba(42,31,14,.08)}
-.walletSectionLabel span{flex:0 0 auto}
-.walletHint{margin-top:13px;display:flex;align-items:center;justify-content:center;gap:7px;color:rgba(42,31,14,.49);font-size:10px;line-height:1.3;font-weight:800}
-.walletHintDot{width:7px;height:7px;border-radius:999px;background:#30b467;box-shadow:0 0 0 3px rgba(48,180,103,.12)}
+.walletIconFallback{display:inline-flex;align-items:center;justify-content:center;color:#8c96a8;font-size:13px}
+.walletName{min-width:0;overflow:hidden;color:#2d3c55;font-size:13px;line-height:1.2;font-weight:800;text-overflow:ellipsis;white-space:nowrap}
+.walletCancel{
+  appearance:none;
+  margin-top:16px;
+  padding:7px 5px;
+  border:0;
+  background:transparent;
+  color:#34435b;
+  font-family:inherit;
+  font-size:12px;
+  font-weight:800;
+  cursor:pointer;
+}
+.walletCancel:hover{color:#101827}
+.walletCancel:disabled{opacity:.55;cursor:default}
 @media (max-width:390px){
   .walletModal{
     align-items:flex-end;
@@ -1319,6 +1314,7 @@ html, body{
       calc(12px + var(--safe-bottom))
       calc(10px + var(--safe-left));
   }
-  .walletCard{width:100%;max-height:min(660px, calc(100dvh - 24px - var(--safe-top) - var(--safe-bottom)));border-radius:24px;padding:16px}
-  .walletRow{min-height:58px;font-size:13px}
+  .walletCard{width:100%;max-height:min(660px, calc(100dvh - 24px - var(--safe-top) - var(--safe-bottom)));border-radius:27px;padding:21px 16px 14px}
+  .walletRow{min-height:60px;padding:9px 12px}
+  .walletIcon{width:38px;height:38px}
 }
