@@ -47,7 +47,13 @@ const CSS = `
 *{scrollbar-width:none;-webkit-tap-highlight-color:transparent}
 *::-webkit-scrollbar{display:none}
 
-.gm{--gm-top-inset:max(12px,env(safe-area-inset-top,0px));position:fixed;inset:0;display:flex;flex-direction:column;background:#f0ebe0;font-family:'Nunito',sans-serif;color:#2a1f0e;overflow:hidden;user-select:none}
+.gm{--gm-top-inset:12px;position:fixed;inset:0;display:flex;flex-direction:column;background:#f0ebe0;font-family:'Nunito',sans-serif;color:#2a1f0e;overflow:hidden;user-select:none}
+
+/* Browser tabs and embedded webviews already start below their top chrome.
+   Only installed/fullscreen experiences need the physical screen safe area. */
+@media (display-mode:standalone),(display-mode:fullscreen){
+  .gm{--gm-top-inset:max(12px,env(safe-area-inset-top,0px))}
+}
 
 /* top bar */
 .gm-top{position:relative;z-index:10;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:var(--gm-top-inset) 18px 10px;flex-shrink:0}
