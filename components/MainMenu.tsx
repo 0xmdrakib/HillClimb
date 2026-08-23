@@ -47,10 +47,10 @@ const CSS = `
 *{scrollbar-width:none;-webkit-tap-highlight-color:transparent}
 *::-webkit-scrollbar{display:none}
 
-.gm{position:fixed;inset:0;display:flex;flex-direction:column;background:#f0ebe0;font-family:'Nunito',sans-serif;color:#2a1f0e;overflow:hidden;user-select:none}
+.gm{--gm-top-inset:max(12px,env(safe-area-inset-top,0px));position:fixed;inset:0;display:flex;flex-direction:column;background:#f0ebe0;font-family:'Nunito',sans-serif;color:#2a1f0e;overflow:hidden;user-select:none}
 
 /* top bar */
-.gm-top{position:relative;z-index:10;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:calc(12px + env(safe-area-inset-top,0px)) 18px 10px;flex-shrink:0}
+.gm-top{position:relative;z-index:10;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:var(--gm-top-inset) 18px 10px;flex-shrink:0}
 .gm-brand{display:flex;align-items:center;gap:10px;min-width:0;flex:1}
 .gm-brandText{min-width:0}
 .gm-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;min-width:0;flex-shrink:0}
@@ -70,11 +70,11 @@ const CSS = `
 .gm-walletPower:hover{background:#fff;color:#6b5d4a}
 .gm-walletPower:active,.gm-wallet:active{transform:translateY(1px)}
 .gm-errorPill{position:relative;z-index:11;margin:-4px 18px 8px auto;width:fit-content;max-width:calc(100% - 36px);border-radius:999px;background:#fff1f1;color:#d73535;border:1px solid rgba(215,53,53,.16);padding:6px 10px;font-size:11px;font-weight:900;box-shadow:0 4px 16px rgba(215,53,53,.08)}
-.gm-pageCoin{position:absolute;top:calc(66px + env(safe-area-inset-top,0px));right:16px;z-index:12;pointer-events:none}
+.gm-pageCoin{position:absolute;top:calc(54px + var(--gm-top-inset));right:16px;z-index:12;pointer-events:none}
 .gm-pageCoinNudge{right:66px}
 
 @media (max-width:390px){
-  .gm-top{align-items:flex-start;gap:10px;padding:calc(12px + env(safe-area-inset-top,0px)) 14px 8px}
+  .gm-top{align-items:flex-start;gap:10px;padding:var(--gm-top-inset) 14px 8px}
   .gm-brand{min-width:0}
   .gm-brandText>div:first-child{font-size:15px}
   .gm-wallet{min-height:34px;padding:5px 9px;font-size:11px}
@@ -83,7 +83,7 @@ const CSS = `
   .gm-walletPower svg{width:14px;height:14px}
   .gm-coin{font-size:12px;padding:5px 12px 5px 8px}
   .gm-coin .ico{width:19px;height:19px;font-size:11px}
-  .gm-pageCoin{top:calc(58px + env(safe-area-inset-top,0px));right:14px}
+  .gm-pageCoin{top:calc(46px + var(--gm-top-inset));right:14px}
   .gm-pageCoinNudge{right:58px}
 }
 
