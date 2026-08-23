@@ -10,6 +10,7 @@
     "lint:fix": "eslint . --fix"
   },
   "dependencies": {
+    "@walletconnect/ethereum-provider": "2.23.10",
     "next": "16.2.4",
     "planck-js": "1.3.0",
     "react": "19.2.5",

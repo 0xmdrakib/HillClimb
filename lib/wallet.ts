@@ -2,9 +2,12 @@
 
 export type Eip1193Provider = {
   request: (args: { method: string; params?: any }) => Promise<any>;
+  disconnect?: () => Promise<void>;
 };
 
 export type EthereumProviderOptions = {
+  /** Use an already-created EIP-1193 provider (for example WalletConnect). */
+  provider?: Eip1193Provider;
   /** Prefer a specific injected wallet when multiple are present. */
   prefer?: "any" | "metamask" | "coinbase";
   /** If provided, pick a specific injected wallet by id (EIP-6963 rdns/uuid, or fallback injected id). */
@@ -30,6 +33,58 @@ export type InjectedWallet = {
   rdns?: string;
   provider: Eip1193Provider;
 };
+
+export const WALLETCONNECT_WALLET_ID = "walletconnect";
+let walletConnectProviderPromise: Promise<Eip1193Provider> | null = null;
+
+/** Initialize WalletConnect without opening its modal. Calling enable() opens the QR/deep-link UI. */
+export async function getWalletConnectProvider(): Promise<Eip1193Provider> {
+  if (typeof window === "undefined") throw new Error("WalletConnect is only available in the browser");
+  const projectId = (process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID ?? "").trim();
+  if (!projectId) throw new Error("WalletConnect is not configured");
+  if (walletConnectProviderPromise) return walletConnectProviderPromise;
+
+  walletConnectProviderPromise = (async () => {
+    const { EthereumProvider } = await import("@walletconnect/ethereum-provider");
+    const origin = window.location.origin;
+    const provider = await EthereumProvider.init({
+      projectId,
+      metadata: {
+        name: "Jesse Hill Climb",
+        description: "A hill climb racing game on Base",
+        url: origin,
+        icons: [`${origin}/icon.png`],
+      },
+      showQrModal: true,
+      optionalChains: [8453],
+      optionalMethods: [
+        "eth_accounts",
+        "eth_requestAccounts",
+        "eth_sendTransaction",
+        "personal_sign",
+        "eth_signTypedData",
+        "eth_signTypedData_v4",
+        "wallet_switchEthereumChain",
+        "wallet_addEthereumChain",
+        "wallet_getCapabilities",
+        "wallet_sendCalls",
+        "wallet_getCallsStatus",
+      ],
+      optionalEvents: ["accountsChanged", "chainChanged", "disconnect"],
+      rpcMap: { 8453: `${origin}/api/rpc` },
+      qrModalOptions: {
+        themeMode: "dark",
+        enableExplorer: true,
+      },
+    });
+    return provider as unknown as Eip1193Provider;
+  })().catch((error) => {
+    walletConnectProviderPromise = null;
+    throw error;
+  });
+
+  return walletConnectProviderPromise;
+}
 
 async function discoverEip6963Providers(timeoutMs = 250): Promise<EIP6963ProviderDetail[]> {
   if (typeof window === "undefined") return [];
@@ -72,17 +127,35 @@ function providerFlagKey(provider: any): string | null {
   return null;
 }
 
-function walletIdentityKey(wallet: InjectedWallet): string {
+function knownWalletBrand(value: string): string | null {
+  const key = compactWalletKey(value);
+  if (key.includes("metamask")) return "metamask";
+  if (key.includes("coinbase")) return "coinbasewallet";
+  if (key.includes("rabby")) return "rabbywallet";
+  if (key.includes("backpack")) return "backpack";
+  if (key.includes("phantom")) return "phantom";
+  if (key.includes("keplr")) return "keplr";
+  if (key.includes("subwallet")) return "subwallet";
+  return null;
+}
+
+function walletIdentityKeys(wallet: InjectedWallet): string[] {
+  const keys = new Set<string>();
   const rdns = compactWalletKey(wallet.rdns ?? "");
-  if (rdns) return `rdns:${rdns}`;
+  if (rdns) keys.add(`rdns:${rdns}`);
 
   const flag = providerFlagKey(wallet.provider as any);
-  if (flag) return `flag:${flag}`;
+  const rdnsBrand = knownWalletBrand(wallet.rdns ?? "");
+  const nameBrand = knownWalletBrand(wallet.name);
+  for (const brand of [flag, rdnsBrand, nameBrand]) {
+    if (brand) keys.add(`brand:${brand}`);
+  }
 
   const name = compactWalletKey(wallet.name);
-  if (name && name !== "injectedwallet" && name !== "wallet") return `name:${name}`;
+  if (name && name !== "injectedwallet" && name !== "wallet") keys.add(`name:${name}`);
 
-  return `id:${wallet.id}`;
+  if (!keys.size) keys.add(`id:${wallet.id}`);
+  return [...keys];
 }
 
 function dedupeInjectedWallets(arr: InjectedWallet[]): InjectedWallet[] {
@@ -96,9 +169,9 @@ function dedupeInjectedWallets(arr: InjectedWallet[]): InjectedWallet[] {
     if (seenProviders.has(wallet.provider as any)) continue;
     seenProviders.add(wallet.provider as any);
 
-    const identity = walletIdentityKey(wallet);
-    if (seenIdentities.has(identity)) continue;
-    seenIdentities.add(identity);
+    const identities = walletIdentityKeys(wallet);
+    if (identities.some((identity) => seenIdentities.has(identity))) continue;
+    identities.forEach((identity) => seenIdentities.add(identity));
 
     out.push(wallet);
   }
@@ -201,6 +274,7 @@ function pickByPrefer(wallets: InjectedWallet[], prefer: "any" | "metamask" | "c
 
 export async function getEthereumProvider(opts?: EthereumProviderOptions): Promise<Eip1193Provider | null> {
   if (typeof window === "undefined") return null;
+  if (opts?.provider) return opts.provider;
 
   // Standard injected wallet (Base App, Coinbase Wallet, MetaMask, etc.).
   const prefer = opts?.prefer ?? "any";

@@ -10,7 +10,12 @@ import { loadGarage, saveGarage, UnlockedVehicles, purchaseVehicle, loadLocalCoi
 import { loadAchievements, saveAchievements, UnlockedAchievements, checkRunAchievements, ACHIEVEMENTS, AchievementId } from "@/lib/achievements";
 import { HillClimbCanvas, HillClimbHandle, HillClimbState } from "@/components/HillClimbCanvas";
 import { MainMenu } from "@/components/MainMenu";
-import { listInjectedWallets, type InjectedWallet } from "@/lib/wallet";
+import {
+  getWalletConnectProvider,
+  listInjectedWallets,
+  WALLETCONNECT_WALLET_ID,
+  type InjectedWallet,
+} from "@/lib/wallet";
 import {
   getOrConnectWallet, tryAutoConnectWallet, readBestMeters,
   submitScoreMeters, sendEthTip, clearCachedWallet,
@@ -88,6 +93,9 @@ const BACK_BUTTON_THEMES: Record<MapId, { background: string; borderColor: strin
 function ShareIcon() {
   return <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M14 3h7v7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /><path d="M21 3l-9 9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /><path d="M10 7H7a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>;
 }
+function WalletConnectIcon() {
+  return <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" fill="#3396ff" /><path d="M9.1 12.5c3.8-3.7 10-3.7 13.8 0l.46.45a.48.48 0 0 1 0 .69l-1.56 1.52a.25.25 0 0 1-.35 0l-.63-.61a6.94 6.94 0 0 0-9.64 0l-.68.66a.25.25 0 0 1-.35 0L8.6 13.69a.48.48 0 0 1 0-.69l.5-.5Zm17.03 3.16 1.39 1.35a.48.48 0 0 1 0 .69l-6.27 6.1a.5.5 0 0 1-.7 0l-4.45-4.33a.13.13 0 0 0-.18 0l-4.45 4.33a.5.5 0 0 1-.7 0l-6.28-6.1a.48.48 0 0 1 0-.69l1.39-1.35a.5.5 0 0 1 .7 0l4.44 4.32a.13.13 0 0 0 .18 0l4.45-4.32a.5.5 0 0 1 .7 0l4.45 4.32a.13.13 0 0 0 .18 0l4.44-4.32a.5.5 0 0 1 .7 0Z" fill="#fff" /></svg>;
+}
 function ChevronDownIcon() {
   return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" /></svg>;
 }
@@ -122,13 +130,15 @@ function AchToast({ name, emoji, reward }: { name: string; emoji: string; reward
 }
 
 function WalletPickerModal({
-  open, choices, connectBusy, onClose, onSelect,
+  open, choices, connectBusy, walletConnectReady, onClose, onSelect, onWalletConnect,
 }: {
   open: boolean;
   choices: InjectedWallet[];
   connectBusy: boolean;
+  walletConnectReady: boolean;
   onClose: () => void;
   onSelect: (wallet: InjectedWallet) => void;
+  onWalletConnect: () => void;
 }) {
   if (!open) return null;
   return (
@@ -136,20 +146,28 @@ function WalletPickerModal({
       <div className="walletCard" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="wallet-picker-title">
         <div className="walletCardTop">
           <div>
-            <div id="wallet-picker-title" className="walletTitle">Choose wallet</div>
-            <div className="walletSubtitle">Pick one injected wallet to use on Base.</div>
+            <div className="walletEyebrow">SECURE CONNECTION</div>
+            <div id="wallet-picker-title" className="walletTitle">Connect wallet</div>
+            <div className="walletSubtitle">Choose an installed wallet or scan with WalletConnect.</div>
           </div>
           <button type="button" className="driverClose" onClick={onClose} aria-label="Close">✕</button>
         </div>
         <div className="walletList">
+          <button type="button" className="walletRow walletConnectRow" disabled={connectBusy || !walletConnectReady} onClick={onWalletConnect}>
+            <span className="walletIcon walletConnectIcon"><WalletConnectIcon /></span>
+            <span className="walletRowMain"><strong>WalletConnect</strong><small>{walletConnectReady ? "Scan QR or choose from 240+ wallets" : "Add a WalletConnect project ID to enable"}</small></span>
+            <span className="walletChevron" aria-hidden="true">›</span>
+          </button>
+          {choices.length ? <div className="walletSectionLabel"><span>Browser wallets</span></div> : null}
           {choices.map(w => (
             <button key={w.id} type="button" className="walletRow" disabled={connectBusy} onClick={() => onSelect(w)}>
               {w.icon ? <img className="walletIcon" src={w.icon} alt="" /> : <span className="walletIcon walletIconFallback">◆</span>}
-              <span>{w.name}</span>
+              <span className="walletRowMain"><strong>{w.name}</strong><small>Installed browser wallet</small></span>
+              <span className="walletChevron" aria-hidden="true">›</span>
             </button>
           ))}
         </div>
-        <div className="walletHint">Selecting the same already-approved wallet reconnects instantly.</div>
+        <div className="walletHint"><span className="walletHintDot" />Your keys stay inside your wallet.</div>
       </div>
     </div>
   );
@@ -200,6 +218,7 @@ export default function Page() {
   const [gameOverMeters, setGameOverMeters] = useState<number>(0);
 
   const scoreboardAddress = (process.env.NEXT_PUBLIC_SCOREBOARD_ADDRESS ?? "").trim();
+  const walletConnectReady = Boolean((process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID ?? "").trim());
 
   const [state, setState] = useState<HillClimbState>({
     distanceM: 0, bestM: 0, coins: 0, fuel: 100, status: "IDLE",
@@ -351,8 +370,25 @@ export default function Page() {
     let lastId: string | null = null;
     try { lastId = localStorage.getItem(LAST_WALLET_KEY); } catch { }
     if (!lastId) return;
-    (async () => { try { const choices = await listInjectedWallets(650); const picked = choices.find(x => x.id === lastId); const w = await tryAutoConnectWallet({ walletId: lastId, prefer: "any" }); if (!w) return; walletRef.current = { provider: w.provider, address: w.address }; setWalletAddr(w.address); setWalletSource(picked?.name ?? labelFromProvider(w.provider)); await refreshBest(w.address); } catch { } })();
-  }, [scoreboardAddress]);
+    (async () => {
+      try {
+        if (lastId === WALLETCONNECT_WALLET_ID) {
+          const provider = await getWalletConnectProvider();
+          const w = await tryAutoConnectWallet({ provider });
+          if (!w) return;
+          walletRef.current = { provider: w.provider, address: w.address };
+          setWalletAddr(w.address); setWalletSource("WalletConnect"); await refreshBest(w.address);
+          return;
+        }
+        const choices = await listInjectedWallets(650);
+        const picked = choices.find(x => x.id === lastId);
+        const w = await tryAutoConnectWallet({ walletId: lastId, prefer: "any" });
+        if (!w) return;
+        walletRef.current = { provider: w.provider, address: w.address };
+        setWalletAddr(w.address); setWalletSource(picked?.name ?? labelFromProvider(w.provider)); await refreshBest(w.address);
+      } catch { }
+    })();
+  }, [scoreboardAddress, walletConnectReady]);
 
   const onConnectWalletClick = async () => {
     try {
@@ -360,7 +396,6 @@ export default function Page() {
       setConnectBusy(true);
       const ws = await listInjectedWallets(900);
       setWalletChoices(ws);
-      if (!ws.length) { setActionErr("No injected wallet found."); return; }
       setWalletModalOpen(true);
     } catch (e: any) {
       setActionErr(e?.message ? String(e.message) : "Wallet connection failed");
@@ -369,7 +404,28 @@ export default function Page() {
     }
   };
 
+  const onWalletConnectClick = async () => {
+    setWalletModalOpen(false); setActionErr(""); setConnectBusy(true);
+    try {
+      const provider = await getWalletConnectProvider();
+      const accounts = await (provider as any).enable();
+      if (!Array.isArray(accounts) || !accounts.length) throw new Error("WalletConnect did not return an account");
+      const { address } = await getOrConnectWallet({ provider });
+      walletRef.current = { provider, address };
+      setWalletAddr(address); setWalletSource("WalletConnect");
+      try { localStorage.setItem(LAST_WALLET_KEY, WALLETCONNECT_WALLET_ID); } catch { }
+      await refreshBest(address);
+    } catch (e: any) {
+      const message = String(e?.message ?? "");
+      if (!/closed|cancelled|canceled|rejected/i.test(message)) setActionErr(message || "WalletConnect connection failed");
+    } finally {
+      setConnectBusy(false);
+    }
+  };
+
   const onDisconnectWallet = () => {
+    const provider = walletRef.current?.provider as any;
+    if (typeof provider?.disconnect === "function") void provider.disconnect().catch(() => undefined);
     clearCachedWallet();
     walletRef.current = null;
     setWalletAddr(null);
@@ -478,8 +534,10 @@ export default function Page() {
           open={walletModalOpen}
           choices={walletChoices}
           connectBusy={connectBusy}
+          walletConnectReady={walletConnectReady}
           onClose={() => setWalletModalOpen(false)}
           onSelect={(w) => { setWalletModalOpen(false); void ensureConnected({ walletId: w.id, walletLabel: w.name }).catch((e: any) => setActionErr(e?.message ?? "Failed")); }}
+          onWalletConnect={() => void onWalletConnectClick()}
         />
       </>
     );
@@ -601,8 +659,10 @@ export default function Page() {
               open={walletModalOpen}
               choices={walletChoices}
               connectBusy={connectBusy}
+              walletConnectReady={walletConnectReady}
               onClose={() => setWalletModalOpen(false)}
               onSelect={(w) => { setWalletModalOpen(false); void ensureConnected({ walletId: w.id, walletLabel: w.name }).catch((e: any) => setActionErr(e?.message ?? "Failed")); }}
+              onWalletConnect={() => void onWalletConnectClick()}
             />
 
             {state.toastT > 0 && state.toast ? <div className="toast">{state.toast}</div> : null}
