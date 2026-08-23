@@ -1,4 +1,10 @@
 import { NextResponse } from "next/server";
+import {
+  enforceRateLimit,
+  readBodyWithLimit,
+  requestTooLargeResponse,
+  RequestBodyTooLargeError,
+} from "@/lib/apiProtection";
 
 export const runtime = "nodejs";
 
@@ -11,12 +17,27 @@ type Body = {
   gameUrl?: string;
 };
 
+const MAX_BODY_BYTES = 6 * 1024 * 1024;
+const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
+const ALLOWED_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
+const RATE_LIMIT = {
+  name: "pinata",
+  ip: [
+    { limit: 5, windowMs: 60_000 },
+    { limit: 30, windowMs: 60 * 60_000 },
+  ],
+  global: [{ limit: 100, windowMs: 60_000 }],
+} as const;
+
 function parseDataUrl(dataUrl: string): { mime: string; bytes: Uint8Array } {
   const m = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
   if (!m) throw new Error("Invalid data URL");
   const mime = m[1];
+  if (!ALLOWED_IMAGE_TYPES.has(mime.toLowerCase())) throw new Error("Unsupported image type");
   const b64 = m[2];
   const buf = Buffer.from(b64, "base64");
+  if (!buf.length) throw new Error("Image is empty");
+  if (buf.byteLength > MAX_IMAGE_BYTES) throw new Error("Image exceeds 4 MB");
   return { mime, bytes: new Uint8Array(buf) };
 }
 
@@ -27,11 +48,25 @@ function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
 }
 
 export async function POST(req: Request) {
+  const limited = enforceRateLimit(req, RATE_LIMIT);
+  if (limited) return limited;
+
+  if (!(req.headers.get("content-type") ?? "").toLowerCase().includes("application/json")) {
+    return NextResponse.json({ error: "Content-Type must be application/json" }, { status: 415 });
+  }
+
+  let body: Body;
   try {
-    const body = (await req.json()) as Body;
+    body = JSON.parse(await readBodyWithLimit(req, MAX_BODY_BYTES)) as Body;
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) return requestTooLargeResponse(error);
+    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+  }
+
+  try {
     const imageDataUrl = String(body.imageDataUrl || "");
     const tokenId = String(body.tokenId || "").trim();
-    const driverName = String(body.driverName || "").trim() || "Driver";
+    const driverName = (String(body.driverName || "").trim() || "Driver").slice(0, 40);
     const driverId = Number(body.driverId ?? 0);
     const meters = Math.max(0, Math.floor(Number(body.meters ?? 0)));
     const gameUrl = typeof body.gameUrl === "string" ? body.gameUrl : undefined;
@@ -39,8 +74,8 @@ export async function POST(req: Request) {
     if (!imageDataUrl.startsWith("data:")) {
       return NextResponse.json({ error: "imageDataUrl must be a data URL" }, { status: 400 });
     }
-    if (!tokenId) {
-      return NextResponse.json({ error: "tokenId is required" }, { status: 400 });
+    if (!/^\d{1,78}$/.test(tokenId)) {
+      return NextResponse.json({ error: "tokenId must be a uint256 decimal string" }, { status: 400 });
     }
 
     const jwt = (process.env.PINATA_JWT ?? "").trim();

@@ -1,10 +1,23 @@
 import { NextResponse } from "next/server";
+import { enforceRateLimit } from "@/lib/apiProtection";
 
 // Server-side helper for Tip modal: fetch live ETH/USD.
 // Primary: Coinbase public spot price endpoint.
 // Fallback: CoinGecko simple price.
 
-export async function GET() {
+const RATE_LIMIT = {
+  name: "ethusd",
+  ip: [
+    { limit: 20, windowMs: 60_000 },
+    { limit: 200, windowMs: 60 * 60_000 },
+  ],
+  global: [{ limit: 500, windowMs: 60_000 }],
+} as const;
+
+export async function GET(request: Request) {
+  const limited = enforceRateLimit(request, RATE_LIMIT);
+  if (limited) return limited;
+
   // Coinbase (no auth required)
   try {
     const r = await fetch("https://api.coinbase.com/v2/prices/ETH-USD/spot", {
