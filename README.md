@@ -1,6 +1,6 @@
 # Jesse Hill Climb
 
-Jesse Hill Climb is a physics-based hill climb racing game built as a Base Mini App and web app, with optional onchain score saving and run NFT minting on Base.
+Jesse Hill Climb is a physics-based hill climb racing game built as a Base App-compatible web app, with optional onchain score saving and run NFT minting on Base.
 
 **Live app:** https://hillclimb.rakibhq.xyz
 
@@ -10,7 +10,7 @@ Jesse Hill Climb is a physics-based hill climb racing game built as a Base Mini 
 
 Jesse Hill Climb turns the classic hill-climb driving loop into a Base-native mini game. Players drive as far as possible across rough terrain, manage fuel, collect coins, unlock upgrades, and save their best runs onchain.
 
-The game is designed to work inside Base/Farcaster mini app clients and also in a normal web browser. It supports mobile-friendly controls, wallet connection, onchain score submission, and collectible run NFTs generated from the crash snapshot.
+The game is designed to work inside the Base App browser and in standard web browsers. It supports mobile-friendly controls, injected wallet connection, onchain score submission, and collectible run NFTs generated from the crash snapshot.
 
 ## Features
 
@@ -24,7 +24,7 @@ The game is designed to work inside Base/Farcaster mini app clients and also in 
 - Onchain best-score saving on Base mainnet
 - Run NFT minting with distance, driver, image snapshot, and metadata
 - Pinata/IPFS metadata upload support for minted run NFTs
-- Farcaster/Base Mini App support with splash handling, share casting, and add-app action
+- Base App support through standard injected wallets and the Web Share API
 - Optional paymaster proxy flow for sponsored contract transactions
 - Builder Code attribution support through ERC-8021 calldata suffixing
 
@@ -82,7 +82,6 @@ If the connected wallet supports paymaster services and the paymaster proxy is c
 - TypeScript
 - planck-js
 - viem
-- Farcaster Mini App SDK
 - Solidity
 - Base mainnet
 - IPFS

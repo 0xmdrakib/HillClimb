@@ -1,19 +1,15 @@
 {
-  "name": "jesse-hill-climb-miniapp",
+  "name": "jesse-hill-climb-base-app",
   "private": true,
   "version": "0.1.0",
   "scripts": {
-    "predev": "node scripts/write-manifest.mjs",
     "dev": "next dev",
-    "prebuild": "node scripts/write-manifest.mjs",
     "build": "next build",
-    "prestart": "node scripts/write-manifest.mjs",
     "start": "next start",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix"
   },
   "dependencies": {
-    "@farcaster/miniapp-sdk": "0.2.1",
     "next": "16.2.4",
     "planck-js": "1.3.0",
     "react": "19.2.5",

@@ -1145,7 +1145,7 @@ canvas{
 
 
 /* ==========================================================================
-   Fullscreen hardening (web + Base/Farcaster Mini Apps)
+   Fullscreen hardening (web + Base App mobile browser)
    - Avoid 100vw in embedded webviews (causes right-side "gutter" / stripe)
    - Use inset-based sizing to match the actual layout viewport
    - Make stage flex-fill so the game always reaches the right edge
@@ -1358,4 +1358,3 @@ html, body{
   }
   .walletRow{min-height:48px;font-size:13px}
 }
-

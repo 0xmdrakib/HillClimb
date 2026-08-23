@@ -49,7 +49,7 @@ export async function POST(req: Request) {
       const name = `Jesse Hill Climb #${tokenId} — ${driverName} — ${meters}m`;
       const metadata = {
         name,
-        description: "An onchain run from Jesse Hill Climb (Base mini app).",
+        description: "An onchain run from Jesse Hill Climb (Base app).",
         image: imageDataUrl,
         external_url: gameUrl,
         attributes: [
@@ -93,7 +93,7 @@ export async function POST(req: Request) {
     const name = `Jesse Hill Climb #${tokenId} — ${driverName} — ${meters}m`;
     const metadata = {
       name,
-      description: "An onchain run from Jesse Hill Climb (Base mini app).",
+      description: "An onchain run from Jesse Hill Climb (Base app).",
       image: `ipfs://${imageCid}`,
       external_url: gameUrl,
       attributes: [

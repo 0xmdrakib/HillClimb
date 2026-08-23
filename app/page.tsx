@@ -10,7 +10,6 @@ import { loadGarage, saveGarage, UnlockedVehicles, purchaseVehicle, loadLocalCoi
 import { loadAchievements, saveAchievements, UnlockedAchievements, checkRunAchievements, ACHIEVEMENTS, AchievementId } from "@/lib/achievements";
 import { HillClimbCanvas, HillClimbHandle, HillClimbState } from "@/components/HillClimbCanvas";
 import { MainMenu } from "@/components/MainMenu";
-import { initMiniApp, composeCast, addMiniApp } from "@/lib/miniapp";
 import { listInjectedWallets, type InjectedWallet } from "@/lib/wallet";
 import {
   getOrConnectWallet, tryAutoConnectWallet, readBestMeters,
@@ -86,9 +85,6 @@ const BACK_BUTTON_THEMES: Record<MapId, { background: string; borderColor: strin
   },
 };
 
-function PlusIcon() {
-  return <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 3h10a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" /><path d="M12 8v8M8 12h8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg>;
-}
 function ShareIcon() {
   return <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M14 3h7v7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /><path d="M21 3l-9 9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /><path d="M10 7H7a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>;
 }
@@ -180,7 +176,6 @@ export default function Page() {
   const [paused, setPaused] = useState(false);
   const [seed] = useState<number>(() => dailySeedUTC());
   const [boostHeld, setBoostHeld] = useState(false);
-  const [mini, setMini] = useState<{ isMini: boolean; fid: number | null }>({ isMini: false, fid: null });
   const [phoneViewport, setPhoneViewport] = useState(false);
   const [landscapeSide, setLandscapeSide] = useState<"right" | "left">("right");
   const [tipOpen, setTipOpen] = useState(false);
@@ -237,10 +232,6 @@ export default function Page() {
   useEffect(() => saveMap(selectedMap), [selectedMap]);
   useEffect(() => saveAllUpgrades(allUpgrades), [allUpgrades]);
 
-  useEffect(() => {
-    (async () => { const { sdk, fid } = await initMiniApp(); setMini({ isMini: Boolean(sdk), fid }); })();
-  }, []);
-
   useClientLayoutEffect(() => {
     if (typeof window === "undefined") return;
     const vv = (window as any).visualViewport as VisualViewport | undefined;
@@ -274,7 +265,7 @@ export default function Page() {
     return () => { alive = false; };
   }, [tipOpen]);
 
-  const immersiveMobileUi = mini.isMini || phoneViewport;
+  const immersiveMobileUi = phoneViewport;
 
   useEffect(() => {
     if (!immersiveMobileUi) return;
@@ -304,19 +295,6 @@ export default function Page() {
     return () => { cancelAnimationFrame(raf); vv?.removeEventListener?.("resize", update); vv?.removeEventListener?.("scroll", update); window.removeEventListener("resize", update); };
   }, [immersiveMobileUi]);
 
-  useEffect(() => {
-    if (!mini.isMini) return;
-    let done = false;
-    const tryLock = async () => {
-      if (done) return; done = true;
-      try { await (document.documentElement as any).requestFullscreen?.(); } catch { }
-      try { await (screen as any).orientation?.lock?.("landscape"); } catch { }
-    };
-    const onFirst = () => { tryLock(); window.removeEventListener("pointerdown", onFirst); window.removeEventListener("touchstart", onFirst); };
-    window.addEventListener("pointerdown", onFirst, { passive: true }); window.addEventListener("touchstart", onFirst, { passive: true });
-    return () => { window.removeEventListener("pointerdown", onFirst); window.removeEventListener("touchstart", onFirst); };
-  }, [mini.isMini]);
-
   const virtualLandscape = immersiveMobileUi && isPortrait;
 
   useEffect(() => { const onVis = () => setPaused(Boolean(document.hidden)); document.addEventListener("visibilitychange", onVis); return () => document.removeEventListener("visibilitychange", onVis); }, []);
@@ -336,8 +314,18 @@ export default function Page() {
   const shareText = useMemo(() => `Jesse Hill Climb: ${fmtM(state.distanceM)}m (best ${fmtM(bestOnchainM)}m)\n${url}`, [bestOnchainM, state.distanceM, url]);
 
   const doShare = async () => {
-    const ok = await composeCast({ text: shareText, embeds: [url] });
-    if (ok) return;
+    try {
+      if (navigator.share) {
+        await navigator.share({
+          title: "Jesse Hill Climb",
+          text: `I drove ${fmtM(state.distanceM)}m in Jesse Hill Climb (best ${fmtM(bestOnchainM)}m).`,
+          url,
+        });
+        return;
+      }
+    } catch (e: any) {
+      if (e?.name === "AbortError") return;
+    }
     try { await navigator.clipboard.writeText(shareText); setState(s => ({ ...s, toast: "Copied!", toastT: 1.1 })); } catch { }
   };
 
@@ -353,32 +341,25 @@ export default function Page() {
     setActionErr(""); setConnectBusy(true);
     try {
       let walletId = opts?.walletId;
-      if (!mini.isMini && !walletId) { try { walletId = localStorage.getItem(LAST_WALLET_KEY) || undefined; } catch { } }
-      const prefer = mini.isMini ? undefined : { allowMiniApp: false, prefer: DEFAULT_INJECTED_WALLET, walletId };
-      const { provider, address } = await getOrConnectWallet(prefer);
+      if (!walletId) { try { walletId = localStorage.getItem(LAST_WALLET_KEY) || undefined; } catch { } }
+      const { provider, address } = await getOrConnectWallet({ prefer: DEFAULT_INJECTED_WALLET, walletId });
       setWalletAddr(address); walletRef.current = { provider, address };
-      setWalletSource(mini.isMini ? "Mini App wallet" : (opts?.walletLabel ?? labelFromProvider(provider)));
-      if (!mini.isMini && walletId) { try { localStorage.setItem(LAST_WALLET_KEY, walletId); } catch { } }
+      setWalletSource(opts?.walletLabel ?? labelFromProvider(provider));
+      if (walletId) { try { localStorage.setItem(LAST_WALLET_KEY, walletId); } catch { } }
       await refreshBest(address); return address;
     } finally { setConnectBusy(false); }
   };
 
   useEffect(() => {
-    if (mini.isMini) return; let lastId: string | null = null;
+    let lastId: string | null = null;
     try { lastId = localStorage.getItem(LAST_WALLET_KEY); } catch { }
     if (!lastId) return;
-    (async () => { try { const choices = await listInjectedWallets(650); const picked = choices.find(x => x.id === lastId); const w = await tryAutoConnectWallet({ allowMiniApp: false, walletId: lastId, prefer: "any" }); if (!w) return; walletRef.current = { provider: w.provider, address: w.address }; setWalletAddr(w.address); setWalletSource(picked?.name ?? labelFromProvider(w.provider)); await refreshBest(w.address); } catch { } })();
-  }, [mini.isMini, scoreboardAddress]);
-
-  useEffect(() => {
-    if (!mini.isMini) return;
-    (async () => { try { const w = await getOrConnectWallet(); walletRef.current = { provider: w.provider, address: w.address }; setWalletAddr(w.address); setWalletSource("Mini App wallet"); await refreshBest(w.address); } catch { } })();
-  }, [mini.isMini, scoreboardAddress]);
+    (async () => { try { const choices = await listInjectedWallets(650); const picked = choices.find(x => x.id === lastId); const w = await tryAutoConnectWallet({ walletId: lastId, prefer: "any" }); if (!w) return; walletRef.current = { provider: w.provider, address: w.address }; setWalletAddr(w.address); setWalletSource(picked?.name ?? labelFromProvider(w.provider)); await refreshBest(w.address); } catch { } })();
+  }, [scoreboardAddress]);
 
   const onConnectWalletClick = async () => {
     try {
       setActionErr("");
-      if (mini.isMini) { await ensureConnected(); return; }
       setConnectBusy(true);
       const ws = await listInjectedWallets(900);
       setWalletChoices(ws);
@@ -387,7 +368,7 @@ export default function Page() {
     } catch (e: any) {
       setActionErr(e?.message ? String(e.message) : "Wallet connection failed");
     } finally {
-      if (!mini.isMini) setConnectBusy(false);
+      setConnectBusy(false);
     }
   };
 
@@ -519,7 +500,7 @@ export default function Page() {
           onDisconnectWallet={onDisconnectWallet}
         />
         <WalletPickerModal
-          open={!mini.isMini && walletModalOpen}
+          open={walletModalOpen}
           choices={walletChoices}
           connectBusy={connectBusy}
           onClose={() => setWalletModalOpen(false)}
@@ -541,7 +522,6 @@ export default function Page() {
           <div className={"header " + (immersiveMobileUi ? "headerMini" : "")}>
             <div><div className="titleRow"><img className="brandLogo" src="/icon.png" alt="" /><div className="title">Jesse Hill Climb</div></div></div>
             <div className="headerBtns">
-              {mini.isMini ? <button className="iconBtn iconBtnDark" type="button" onClick={() => addMiniApp()} aria-label="Add mini app"><PlusIcon /></button> : null}
               <button className="iconBtn iconBtnPrimary" type="button" onClick={doShare} aria-label="Share"><ShareIcon /></button>
             </div>
           </div>
@@ -643,7 +623,7 @@ export default function Page() {
             ) : null}
 
             <WalletPickerModal
-              open={!mini.isMini && walletModalOpen}
+              open={walletModalOpen}
               choices={walletChoices}
               connectBusy={connectBusy}
               onClose={() => setWalletModalOpen(false)}

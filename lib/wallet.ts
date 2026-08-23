@@ -1,7 +1,5 @@
 "use client";
 
-import { getMiniAppSdk, isInMiniApp } from "@/lib/miniapp";
-
 export type Eip1193Provider = {
   request: (args: { method: string; params?: any }) => Promise<any>;
 };
@@ -9,8 +7,6 @@ export type Eip1193Provider = {
 export type EthereumProviderOptions = {
   /** Prefer a specific injected wallet when multiple are present. */
   prefer?: "any" | "metamask" | "coinbase";
-  /** If false, skip the Mini App host provider and only use injected wallets (useful for local browser testing). */
-  allowMiniApp?: boolean;
   /** If provided, pick a specific injected wallet by id (EIP-6963 rdns/uuid, or fallback injected id). */
   walletId?: string;
 };
@@ -161,9 +157,8 @@ export async function listInjectedWallets(timeoutMs = 600): Promise<InjectedWall
     // ignore
   }
 
-  // 2) Legacy multi-provider fallback.
-  // Intentionally do not add the single window.ethereum object as a connect choice:
-  // it often duplicates an EIP-6963 provider and can show the same wallet twice.
+  // 2) Legacy injected-provider fallback. This also covers the Base App's
+  // standard in-app browser when it exposes a single EIP-1193 provider.
   try {
     const anyWin: any = window as any;
     const eth: any = anyWin.ethereum;
@@ -175,6 +170,14 @@ export async function listInjectedWallets(timeoutMs = 600): Promise<InjectedWall
         const label = fallbackWalletLabel(p);
         const id = `injected:${compactWalletKey(label) || "wallet"}:${i}`;
         out.push({ id, name: label, provider: p as Eip1193Provider });
+      });
+    }
+
+    if (eth && typeof eth.request === "function") {
+      out.push({
+        id: "injected:ethereum",
+        name: fallbackWalletLabel(eth),
+        provider: eth as Eip1193Provider,
       });
     }
   } catch {
@@ -199,25 +202,7 @@ function pickByPrefer(wallets: InjectedWallet[], prefer: "any" | "metamask" | "c
 export async function getEthereumProvider(opts?: EthereumProviderOptions): Promise<Eip1193Provider | null> {
   if (typeof window === "undefined") return null;
 
-  // Prefer the Mini App wallet provider when available.
-  if (opts?.allowMiniApp !== false) {
-    try {
-      // NOTE: importing the SDK in a normal browser still succeeds.
-      // We must only use the host wallet provider when *actually* in a Mini App.
-      const inMini = await isInMiniApp();
-      if (inMini) {
-        const sdk: any = await getMiniAppSdk();
-        if (sdk && sdk.wallet && typeof sdk.wallet.getEthereumProvider === "function") {
-          const p: any = await sdk.wallet.getEthereumProvider();
-          if (p && typeof p.request === "function") return p as Eip1193Provider;
-        }
-      }
-    } catch {
-      // ignore
-    }
-  }
-
-  // Browser wallet fallback (e.g., MetaMask, Coinbase Wallet extension).
+  // Standard injected wallet (Base App, Coinbase Wallet, MetaMask, etc.).
   const prefer = opts?.prefer ?? "any";
 
   // If a specific wallet id is requested, pick it if present.
