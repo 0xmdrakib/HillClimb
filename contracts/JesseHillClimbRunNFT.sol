@@ -4,7 +4,7 @@ pragma solidity ^0.8.24;
 import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 
 /// @title Jesse Hill Climb Run NFT
-/// @notice Anyone can mint any run. TokenURI points to IPFS (Pinata) metadata.
+/// @notice Anyone can mint any run. TokenURI can contain self-contained or external metadata.
 contract JesseHillClimbRunNFT is ERC721 {
   uint256 public nextTokenId = 1;
 
@@ -25,7 +25,7 @@ contract JesseHillClimbRunNFT is ERC721 {
   /// @notice Mint a run NFT.
   /// @param meters Score in meters.
   /// @param driverId 0=Jesse, 1=Brian.
-  /// @param tokenURI_ Metadata URI (recommended ipfs://...)
+  /// @param tokenURI_ Metadata URI.
   function mintRun(uint256 meters, uint8 driverId, string calldata tokenURI_) external returns (uint256 tokenId) {
     tokenId = nextTokenId;
     nextTokenId = tokenId + 1;

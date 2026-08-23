@@ -4,12 +4,12 @@ import {
   createPublicClient,
   createWalletClient,
   custom,
+  defineChain,
   encodeFunctionData,
   http,
   parseEther,
   type Address,
 } from "viem";
-import { base } from "viem/chains";
 
 import {
   getEthereumProvider,
@@ -28,6 +28,13 @@ import { appendErc8021Suffix, ERC8021_DATA_SUFFIX } from "@/lib/builderCodes";
 
 const BASE_CHAIN_ID = 8453;
 const BASE_CHAIN_ID_HEX = "0x2105";
+const BASE_CHAIN = defineChain({
+  id: BASE_CHAIN_ID,
+  name: "Base",
+  nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+  rpcUrls: { default: { http: ["/api/rpc"] } },
+  blockExplorers: { default: { name: "Basescan", url: "https://basescan.org" } },
+});
 
 function isUserRejected(e: unknown): boolean {
   const err = e as any;
@@ -77,14 +84,14 @@ async function trySponsoredWriteContract(params: {
   }
 }
 
-function getBaseRpcUrl() {
-  const env = (process.env.NEXT_PUBLIC_BASE_RPC_URL ?? "").trim();
-  return env || "https://mainnet.base.org";
+function getRpcProxyUrl() {
+  if (typeof window === "undefined") return "/api/rpc";
+  return new URL("/api/rpc", window.location.origin).toString();
 }
 
 const publicClient = createPublicClient({
-  chain: base,
-  transport: http(getBaseRpcUrl()),
+  chain: BASE_CHAIN,
+  transport: http(getRpcProxyUrl()),
 });
 
 export async function ensureBaseMainnet(provider?: Eip1193Provider) {
@@ -113,7 +120,7 @@ export async function ensureBaseMainnet(provider?: Eip1193Provider) {
           chainId: BASE_CHAIN_ID_HEX,
           chainName: "Base",
           nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-          rpcUrls: [getBaseRpcUrl()],
+          rpcUrls: [getRpcProxyUrl()],
           blockExplorerUrls: ["https://basescan.org"],
         },
       ],
@@ -183,7 +190,7 @@ export async function tryAutoConnectWallet(opts?: EthereumProviderOptions): Prom
 
 function getWalletClient(provider: Eip1193Provider, address: Address) {
   return createWalletClient({
-    chain: base,
+    chain: BASE_CHAIN,
     transport: custom(provider),
     account: address,
   });

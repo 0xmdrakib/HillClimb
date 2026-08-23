@@ -207,16 +207,18 @@ export class RequestBodyTooLargeError extends Error {
   }
 }
 
-/** Read a request body without allowing an unbounded allocation. */
-export async function readBodyWithLimit(request: Request, maxBytes: number): Promise<string> {
-  const declaredLength = Number(request.headers.get("content-length"));
+async function readStreamWithLimit(
+  body: ReadableStream<Uint8Array> | null,
+  declaredLength: number,
+  maxBytes: number,
+): Promise<string> {
   if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
     throw new RequestBodyTooLargeError(maxBytes);
   }
 
-  if (!request.body) return "";
+  if (!body) return "";
 
-  const reader = request.body.getReader();
+  const reader = body.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
 
@@ -242,6 +244,16 @@ export async function readBodyWithLimit(request: Request, maxBytes: number): Pro
   }
 
   return new TextDecoder().decode(bytes);
+}
+
+/** Read a request body without allowing an unbounded allocation. */
+export function readBodyWithLimit(request: Request, maxBytes: number): Promise<string> {
+  return readStreamWithLimit(request.body, Number(request.headers.get("content-length")), maxBytes);
+}
+
+/** Read an upstream response without allowing an unbounded allocation. */
+export function readResponseWithLimit(response: Response, maxBytes: number): Promise<string> {
+  return readStreamWithLimit(response.body, Number(response.headers.get("content-length")), maxBytes);
 }
 
 export function requestTooLargeResponse(error: RequestBodyTooLargeError, headers?: HeadersInit) {

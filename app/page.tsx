@@ -13,7 +13,7 @@ import { MainMenu } from "@/components/MainMenu";
 import { listInjectedWallets, type InjectedWallet } from "@/lib/wallet";
 import {
   getOrConnectWallet, tryAutoConnectWallet, readBestMeters,
-  submitScoreMeters, getNextTokenId, mintRunNft, sendEthTip, clearCachedWallet,
+  submitScoreMeters, sendEthTip, clearCachedWallet,
 } from "@/lib/onchain";
 import { audioManager } from "@/lib/audio";
 
@@ -191,10 +191,8 @@ export default function Page() {
   const [walletSource, setWalletSource] = useState<string>("");
   const [bestOnchainM, setBestOnchainM] = useState<number>(0);
   const [scoreBusy, setScoreBusy] = useState(false);
-  const [mintBusy, setMintBusy] = useState(false);
   const [connectBusy, setConnectBusy] = useState(false);
   const [scoreTx, setScoreTx] = useState<string | null>(null);
-  const [mintTx, setMintTx] = useState<string | null>(null);
   const [actionErr, setActionErr] = useState<string>("");
   const [walletModalOpen, setWalletModalOpen] = useState(false);
   const [walletChoices, setWalletChoices] = useState<InjectedWallet[]>([]);
@@ -202,7 +200,6 @@ export default function Page() {
   const [gameOverMeters, setGameOverMeters] = useState<number>(0);
 
   const scoreboardAddress = (process.env.NEXT_PUBLIC_SCOREBOARD_ADDRESS ?? "").trim();
-  const runNftAddress = (process.env.NEXT_PUBLIC_RUNNFT_ADDRESS ?? "").trim();
 
   const [state, setState] = useState<HillClimbState>({
     distanceM: 0, bestM: 0, coins: 0, fuel: 100, status: "IDLE",
@@ -379,7 +376,6 @@ export default function Page() {
     setWalletSource("");
     setBestOnchainM(0);
     setScoreTx(null);
-    setMintTx(null);
     setActionErr("");
     setWalletModalOpen(false);
     try { localStorage.removeItem(LAST_WALLET_KEY); } catch { }
@@ -387,7 +383,7 @@ export default function Page() {
 
   const onTryAgain = () => {
     setPaused(false); setGameOverShot(null); setGameOverMeters(0);
-    setScoreBusy(false); setMintBusy(false); setScoreTx(null); setMintTx(null); setActionErr("");
+    setScoreBusy(false); setScoreTx(null); setActionErr("");
     gameRef.current?.reset();
   };
 
@@ -402,27 +398,6 @@ export default function Page() {
       const tx = await submitScoreMeters(scoreboardAddress, meters, w ? { provider: w.provider, address: w.address as any } : undefined);
       setScoreTx(tx); await refreshBest(addr);
     } catch (e: any) { setActionErr(humanizeTxErr(e)); } finally { setScoreBusy(false); }
-  };
-
-  const onMintNft = async () => {
-    try {
-      setActionErr(""); setMintTx(null);
-      if (!runNftAddress) { setActionErr("Missing NEXT_PUBLIC_RUNNFT_ADDRESS in .env.local"); return; }
-      if (!gameOverShot) { setActionErr("No snapshot. Try again and crash once."); return; }
-      setMintBusy(true);
-      void (walletAddr ?? (await ensureConnected()));
-      const meters = Math.max(0, Math.floor(gameOverMeters || state.distanceM));
-      const driverId = head === "jesse" ? 0 : 1;
-      const driverName = HEADS[head].label;
-      const tokenId = await getNextTokenId(runNftAddress);
-      const resp = await fetch("/api/pinata", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ imageDataUrl: gameOverShot, meters, driverId, driverName, tokenId: tokenId.toString(), gameUrl: url }) });
-      if (!resp.ok) throw new Error((await resp.text().catch(() => "")) || "IPFS upload failed");
-      const out = (await resp.json()) as { tokenUri: string };
-      if (!out?.tokenUri) throw new Error("Missing tokenUri");
-      const w = walletRef.current;
-      const tx = await mintRunNft(runNftAddress, meters, driverId, out.tokenUri, w ? { provider: w.provider, address: w.address as any } : undefined);
-      setMintTx(tx);
-    } catch (e: any) { setActionErr(humanizeTxErr(e)); } finally { setMintBusy(false); }
   };
 
   const handleSelectVehicle = (vid: VehicleId) => { setSelectedVehicle(vid); };
@@ -643,15 +618,13 @@ export default function Page() {
                   <div className="endOnchainRow"><div className="endOnchainMeta">
                     <div className="endOnchainLine">Network: Base mainnet</div>
                     <div className="endOnchainLine">Wallet: {walletAddr ?? "Not connected"}{walletAddr && walletSource ? ` (${walletSource})` : ""}</div>
-                    {!scoreboardAddress || !runNftAddress ? <div className="endOnchainWarn">Set contract addresses in .env.local to enable.</div> : null}
+                    {!scoreboardAddress ? <div className="endOnchainWarn">Set the scoreboard contract address in .env.local to enable.</div> : null}
                     {scoreTx ? <div className="endOnchainOk">Score tx: {shortHash(scoreTx)}</div> : null}
-                    {mintTx ? <div className="endOnchainOk">Mint tx: {shortHash(mintTx)}</div> : null}
                     {actionErr ? <div className="endOnchainErr">{actionErr}</div> : null}
                   </div></div>
                   <div className="endOnchainBtns">
-                    {!walletAddr ? <button type="button" className="actionBtn btnDark" disabled={scoreBusy || mintBusy || connectBusy} onClick={() => void onConnectWalletClick()}>{connectBusy ? "Connecting…" : "Connect wallet"}</button> : null}
-                    <button type="button" className="actionBtn btnDark" disabled={scoreBusy || mintBusy || !scoreboardAddress || connectBusy} onClick={onSubmitScore}>{scoreBusy ? "Submitting…" : "Save score onchain"}</button>
-                    <button type="button" className="actionBtn btnDark" disabled={scoreBusy || mintBusy || !runNftAddress || !gameOverShot || connectBusy} onClick={onMintNft}>{mintBusy ? "Minting…" : "Mint run NFT"}</button>
+                    {!walletAddr ? <button type="button" className="actionBtn btnDark" disabled={scoreBusy || connectBusy} onClick={() => void onConnectWalletClick()}>{connectBusy ? "Connecting…" : "Connect wallet"}</button> : null}
+                    <button type="button" className="actionBtn btnDark" disabled={scoreBusy || !scoreboardAddress || connectBusy} onClick={onSubmitScore}>{scoreBusy ? "Submitting…" : "Save score onchain"}</button>
                   </div>
                 </div>
                 <div className="endBtns">

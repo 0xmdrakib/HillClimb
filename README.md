@@ -1,6 +1,6 @@
 # Jesse Hill Climb
 
-Jesse Hill Climb is a physics-based hill climb racing game built as a Base App-compatible web app, with optional onchain score saving and run NFT minting on Base.
+Jesse Hill Climb is a physics-based hill climb racing game built as a Base App-compatible web app, with optional onchain score saving on Base.
 
 **Live app:** https://hillclimb.rakibhq.xyz
 
@@ -22,8 +22,6 @@ The game is designed to work inside the Base App browser and in standard web bro
 - Upgrade categories for engine, suspension, tires, and fuel tank
 - Achievement system with coin rewards
 - Onchain best-score saving on Base mainnet
-- Run NFT minting with distance, driver, image snapshot, and metadata
-- Pinata/IPFS metadata upload support for minted run NFTs
 - Base App support through standard injected wallets and the Web Share API
 - Optional paymaster proxy flow for sponsored contract transactions
 - Builder Code attribution support through ERC-8021 calldata suffixing
@@ -31,6 +29,8 @@ The game is designed to work inside the Base App browser and in standard web bro
 ## Supported chain
 
 - Base mainnet
+
+The browser connects through the protected same-origin `/api/rpc` endpoint. Configure the upstream provider as the server-only `BASE_RPC_URL` environment variable in Vercel; never expose it with a `NEXT_PUBLIC_` prefix.
 
 ## Gameplay behavior
 
@@ -69,11 +69,11 @@ After a run ends, players can connect a wallet and save their score to the deplo
 
 ### Run NFT minting
 
-Players can mint a crashed run as an NFT. The app captures a run snapshot, prepares metadata with the selected driver and distance, uploads metadata through Pinata when configured, and mints through the deployed run NFT contract.
+Run NFT minting is temporarily disabled in the app.
 
 ### Gasless support
 
-If the connected wallet supports paymaster services and the paymaster proxy is configured, score saving and NFT minting can use the sponsored transaction path. If sponsorship is unavailable, the app falls back to normal wallet transactions.
+If the connected wallet supports paymaster services and the paymaster proxy is configured, score saving can use the sponsored transaction path. If sponsorship is unavailable, the app falls back to a normal wallet transaction.
 
 ## Tech stack
 
@@ -84,7 +84,6 @@ If the connected wallet supports paymaster services and the paymaster proxy is c
 - viem
 - Solidity
 - Base mainnet
-- IPFS
 
 ---
 
