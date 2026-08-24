@@ -420,7 +420,9 @@ export default function Page() {
 
   const onDisconnectWallet = () => {
     const provider = walletRef.current?.provider as any;
-    if (typeof provider?.disconnect === "function") void provider.disconnect().catch(() => undefined);
+    const wasWalletConnect = walletSource === "WalletConnect";
+
+    // Clear the app session first. Provider APIs vary and must never block local disconnect.
     clearCachedWallet();
     walletRef.current = null;
     setWalletAddr(null);
@@ -430,6 +432,20 @@ export default function Page() {
     setActionErr("");
     setWalletModalOpen(false);
     try { localStorage.removeItem(LAST_WALLET_KEY); } catch { }
+
+    void (async () => {
+      try {
+        if (wasWalletConnect && typeof provider?.disconnect === "function") {
+          await provider.disconnect();
+          return;
+        }
+        if (typeof provider?.request === "function") {
+          await provider.request({ method: "wallet_revokePermissions", params: [{ eth_accounts: {} }] });
+        }
+      } catch {
+        // Local state is already disconnected; unsupported provider cleanup is harmless.
+      }
+    })();
   };
 
   const onTryAgain = () => {

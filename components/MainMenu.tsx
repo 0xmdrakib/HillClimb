@@ -205,7 +205,7 @@ export function MainMenu({
             <div className="gm-wallet gm-walletConnected" title={walletSource || "Connected wallet"}>
               <span className="gm-walletDot" />
               <span className="gm-walletText">{shortWalletAddress(walletAddress)}</span>
-              <button type="button" className="gm-walletPower" onClick={onDisconnectWallet} aria-label="Disconnect wallet" title="Disconnect wallet">
+              <button type="button" className="gm-walletPower" onClick={(event) => { event.stopPropagation(); onDisconnectWallet?.(); }} aria-label="Disconnect wallet" title="Disconnect wallet">
                 <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                   <path d="M12 3v8" />
                   <path d="M7.05 7.05a7 7 0 1 0 9.9 0" />
