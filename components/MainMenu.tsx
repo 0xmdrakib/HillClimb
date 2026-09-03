@@ -191,9 +191,9 @@ export function MainMenu({
       {/* ═══ TOP BAR ═══ */}
       <div className="gm-top">
         <div className="gm-brand">
-          <img src="/icon.png" alt="Logo" style={{
-            width: 38, height: 38, borderRadius: 12,
-            boxShadow: "0 2px 8px rgba(184,137,44,.3)",
+          <img src="/icon.png" alt="Jesse Hill Climb logo" style={{
+            width: 42, height: 42, objectFit: "contain",
+            filter: "drop-shadow(0 3px 5px rgba(92,52,12,.2))",
           }} />
           <div className="gm-brandText">
             <div style={{ fontSize: 16, fontWeight: 900, color: "#2a1f0e", whiteSpace: "nowrap" }}>Jesse Hill Climb</div>

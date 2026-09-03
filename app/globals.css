@@ -963,12 +963,10 @@ canvas{
 
 
 .brandLogo{
-  width:30px;
-  height:30px;
-  border-radius:10px;
-  border:1px solid rgba(0,0,0,.10);
-  background: rgba(255,255,255,.7);
-  box-shadow: 0 10px 25px rgba(0,0,0,.10);
+  width:34px;
+  height:34px;
+  object-fit:contain;
+  filter:drop-shadow(0 3px 5px rgba(92,52,12,.2));
 }
 
 .iconBtn{

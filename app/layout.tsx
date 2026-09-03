@@ -22,14 +22,14 @@ const imageUrl = process.env.NEXT_PUBLIC_APP_HERO_IMAGE || `${URL}/embed.png`;
 
 export const metadata: Metadata = {
   title: APP_NAME,
-  description: "Jesse Hill Climb, a hill climb game with NFT and onchain feature.",
+  description: "Jesse Hill Climb, an onchain hill climb racing game on Base.",
   other: {
     // Redundant with app/head.tsx, but required by some Base verification paths.
     "base:app_id": BASE_APP_ID,
   },
   openGraph: {
     title: APP_NAME,
-    description: "Jesse Hill Climb, a hill climb game with NFT and onchain feature.",
+    description: "Jesse Hill Climb, an onchain hill climb racing game on Base.",
     images: [{ url: imageUrl }],
   },
 };
