@@ -53,7 +53,7 @@ export async function getWalletConnectProvider(): Promise<Eip1193Provider> {
         name: "Jesse Hill Climb",
         description: "A hill climb racing game on Base",
         url: origin,
-        icons: [`${origin}/icon.png`],
+        icons: [`${origin}/assets/branding/logo-header.png`],
       },
       showQrModal: true,
       optionalChains: [8453],

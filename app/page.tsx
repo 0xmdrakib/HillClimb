@@ -564,7 +564,7 @@ export default function Page() {
           (virtualLandscape && landscapeSide === "left" ? " landscapeLeft" : "")
         }>
           <div className={"header " + (immersiveMobileUi ? "headerMini" : "")}>
-            <div><div className="titleRow"><img className="brandLogo" src="/icon.png" alt="Jesse Hill Climb logo" /><div className="title">Jesse Hill Climb</div></div></div>
+            <div><div className="titleRow"><img className="brandLogo" src="/assets/branding/logo-header.png" alt="Jesse Hill Climb logo" /><div className="title">Jesse Hill Climb</div></div></div>
             <div className="headerBtns">
               <button className="iconBtn iconBtnPrimary" type="button" onClick={doShare} aria-label="Share"><ShareIcon /></button>
             </div>
