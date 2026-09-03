@@ -26,12 +26,6 @@ The game is designed to work inside the Base App browser and in standard web bro
 - Optional paymaster proxy flow for sponsored contract transactions
 - Builder Code attribution support through ERC-8021 calldata suffixing
 
-## Supported chain
-
-- Base mainnet
-
-The browser connects through the protected same-origin `/api/rpc` endpoint. Configure the upstream provider as the server-only `BASE_RPC_URL` environment variable in Vercel; never expose it with a `NEXT_PUBLIC_` prefix.
-
 ## Gameplay behavior
 
 ### Driving
