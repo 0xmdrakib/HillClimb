@@ -181,7 +181,7 @@ export function MainMenu({
     else switchTab("garage");
   };
 
-  const btnLabel = tab === "maps" ? "▶ Start Race" : tab === "garage" ? "▶ Next: Select Map" : "▶ Setup Race";
+  const btnLabel = tab === "garage" ? "▶ Next: Select Map" : "▶ Start Race";
   const showPageCoin = tab === "garage" || tab === "maps";
 
   return (
