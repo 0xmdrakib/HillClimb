@@ -801,36 +801,38 @@ export default function Page() {
                   <div className="endSub"><strong>{fmtM(state.distanceM)}m</strong><span>Best {fmtM(bestOnchainM)}m</span>{beatOnchainBest ? <em>New best</em> : null}</div>
                 </div>
                 <div className="endShotWrap">{gameOverShot ? <img className="endShot" src={gameOverShot} alt="Run snapshot" /> : <div className="endShotPlaceholder">Preparing snapshot…</div>}</div>
-                <div className="endOnchain">
-                  <div className="endOnchainBtns">
-                    <button type="button" className="endAction endActionScore" disabled={scoreBusy || mintBusy || connectBusy} onClick={onSubmitScore}>
-                      <span className="endActionIcon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 4.75h11.5L19 7.3v11.95H5z"/><path d="M8 4.75v5h7v-5M8.5 19.25v-5.5h7v5.5"/></svg></span>
-                      <span className="endActionCopy"><strong>{scoreBusy ? "Saving…" : "Save score"}</strong><small>Permanent record on Base</small></span>
-                      <span className="endActionArrow" aria-hidden="true">→</span>
+                <div className="endControlStack">
+                  <div className="endOnchain">
+                    <div className="endOnchainBtns">
+                      <button type="button" className="endAction endActionScore" disabled={scoreBusy || mintBusy || connectBusy} onClick={onSubmitScore}>
+                        <span className="endActionIcon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 4.75h11.5L19 7.3v11.95H5z"/><path d="M8 4.75v5h7v-5M8.5 19.25v-5.5h7v5.5"/></svg></span>
+                        <span className="endActionCopy"><strong>{scoreBusy ? "Saving…" : "Save score"}</strong><small>Permanent record on Base</small></span>
+                        <span className="endActionArrow" aria-hidden="true">→</span>
+                      </button>
+                      <button type="button" className="endAction endActionMint" disabled={mintBusy || scoreBusy || connectBusy} onClick={() => void onMintNft()}>
+                        <span className="endActionIcon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m12 3 7 4v10l-7 4-7-4V7z"/><path d="m8.5 12 2.15 2.15L15.8 9"/></svg></span>
+                        <span className="endActionCopy"><strong>{mintBusy ? "Working…" : hasPendingMint ? "Retry storage" : "Mint as NFT"}</strong><small>{mintBusy && mintStage ? mintStage : "Collect this exact finish"}</small></span>
+                        <span className="endActionArrow" aria-hidden="true">→</span>
+                      </button>
+                    </div>
+                    {scoreTx || mintStage || actionErr ? <div className="endStatus" aria-live="polite">
+                      {scoreTx ? <span className="endStatusOk">✓ Score saved · {shortHash(scoreTx)}</span> : null}
+                      {mintStage ? <span className={mintGatewayUrl ? "endStatusOk" : ""}>{mintGatewayUrl ? "✓ " : ""}{mintStage}</span> : null}
+                      {mintTx && !mintGatewayUrl ? <a href={`https://basescan.org/tx/${mintTx}`} target="_blank" rel="noreferrer">View mint transaction ↗</a> : null}
+                      {mintGatewayUrl ? <a href={mintGatewayUrl} target="_blank" rel="noreferrer">View NFT metadata ↗</a> : null}
+                      {actionErr ? <span className="endStatusError">{actionErr}</span> : null}
+                    </div> : null}
+                  </div>
+                  <div className="endBtns">
+                    <button type="button" className="endSecondary endRetry" aria-label="Try again" onClick={onTryAgain}>
+                      <span className="endSecondaryIcon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M20 7h-5V2"/><path d="M4 17h5v5"/><path d="M5.1 9A8 8 0 0 1 18.3 5.3L20 7"/><path d="M18.9 15A8 8 0 0 1 5.7 18.7L4 17"/></svg></span>
+                      <span><strong>Try again</strong><small>Beat this run</small></span>
                     </button>
-                    <button type="button" className="endAction endActionMint" disabled={mintBusy || scoreBusy || connectBusy} onClick={() => void onMintNft()}>
-                      <span className="endActionIcon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m12 3 7 4v10l-7 4-7-4V7z"/><path d="m8.5 12 2.15 2.15L15.8 9"/></svg></span>
-                      <span className="endActionCopy"><strong>{mintBusy ? "Working…" : hasPendingMint ? "Retry storage" : "Mint as NFT"}</strong><small>{mintBusy && mintStage ? mintStage : "Collect this exact finish"}</small></span>
-                      <span className="endActionArrow" aria-hidden="true">→</span>
+                    <button type="button" className="endSecondary endMenu" aria-label="Back to menu" onClick={() => { audioManager.suspend(); setGamePhase("menu"); }}>
+                      <span className="endSecondaryIcon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 5h5v5H5zM14 5h5v5h-5zM5 14h5v5H5zM14 14h5v5h-5z"/></svg></span>
+                      <span><strong>Menu</strong><small>Change your setup</small></span>
                     </button>
                   </div>
-                  {scoreTx || mintStage || actionErr ? <div className="endStatus" aria-live="polite">
-                    {scoreTx ? <span className="endStatusOk">✓ Score saved · {shortHash(scoreTx)}</span> : null}
-                    {mintStage ? <span className={mintGatewayUrl ? "endStatusOk" : ""}>{mintGatewayUrl ? "✓ " : ""}{mintStage}</span> : null}
-                    {mintTx && !mintGatewayUrl ? <a href={`https://basescan.org/tx/${mintTx}`} target="_blank" rel="noreferrer">View mint transaction ↗</a> : null}
-                    {mintGatewayUrl ? <a href={mintGatewayUrl} target="_blank" rel="noreferrer">View NFT metadata ↗</a> : null}
-                    {actionErr ? <span className="endStatusError">{actionErr}</span> : null}
-                  </div> : null}
-                </div>
-                <div className="endBtns">
-                  <button type="button" className="endSecondary endRetry" aria-label="Try again" onClick={onTryAgain}>
-                    <span className="endSecondaryIcon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 8V4m0 0h4M5 4l3 3a7 7 0 1 1-2 8"/></svg></span>
-                    <span><strong>Try again</strong><small>Beat this run</small></span>
-                  </button>
-                  <button type="button" className="endSecondary endMenu" aria-label="Back to menu" onClick={() => { audioManager.suspend(); setGamePhase("menu"); }}>
-                    <span className="endSecondaryIcon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 5h5v5H5zM14 5h5v5h-5zM5 14h5v5H5zM14 14h5v5h-5z"/></svg></span>
-                    <span><strong>Menu</strong><small>Change your setup</small></span>
-                  </button>
                 </div>
               </div></div>
             ) : null}

@@ -1,3 +1,4 @@
+import "@fontsource-variable/nunito";
 import "./globals.css";
 import type { Metadata, Viewport } from "next";
 

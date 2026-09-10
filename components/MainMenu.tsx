@@ -51,12 +51,10 @@ function CoinBalance({ coins, className = "" }: { coins: number; className?: str
 }
 
 const CSS = `
-@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&display=swap');
-
 *{scrollbar-width:none;-webkit-tap-highlight-color:transparent}
 *::-webkit-scrollbar{display:none}
 
-.gm{--gm-top-inset:12px;position:fixed;inset:0;display:flex;flex-direction:column;background:#f0ebe0;font-family:'Nunito',sans-serif;color:#2a1f0e;overflow:hidden;user-select:none}
+.gm{--gm-top-inset:12px;position:fixed;inset:0;display:flex;flex-direction:column;background:#f0ebe0;font-family:'Nunito Variable','Nunito',sans-serif;color:#2a1f0e;overflow:hidden;user-select:none}
 
 /* Browser tabs and embedded webviews already start below their top chrome.
    Only installed/fullscreen experiences need the physical screen safe area. */
@@ -77,7 +75,7 @@ const CSS = `
 .gm-coin.gm-coinCompact .ico{width:18px;height:18px;font-size:11px}
 
 /* wallet badge */
-.gm-wallet{appearance:none;border:1px solid rgba(42,31,14,.10);border-radius:999px;background:rgba(255,255,255,.90);color:#2a1f0e;min-height:38px;padding:6px 11px;display:inline-flex;align-items:center;gap:8px;font-family:'Nunito',sans-serif;font-weight:900;font-size:12px;box-shadow:0 4px 16px rgba(42,31,14,.08);cursor:pointer;white-space:nowrap}
+.gm-wallet{appearance:none;border:1px solid rgba(42,31,14,.10);border-radius:999px;background:rgba(255,255,255,.90);color:#2a1f0e;min-height:38px;padding:6px 11px;display:inline-flex;align-items:center;gap:8px;font-family:inherit;font-weight:900;font-size:12px;box-shadow:0 4px 16px rgba(42,31,14,.08);cursor:pointer;white-space:nowrap}
 .gm-wallet:disabled{opacity:.7;cursor:default}
 .gm-walletConnected{cursor:default;padding:4px 5px 4px 10px;gap:8px;background:rgba(255,255,255,.94);box-shadow:0 4px 18px rgba(42,31,14,.10),inset 0 1px 0 rgba(255,255,255,.75)}
 .gm-walletDot{width:8px;height:8px;border-radius:999px;background:#25c26a;box-shadow:0 0 0 4px rgba(37,194,106,.12);margin-left:1px;flex:0 0 auto}
@@ -112,7 +110,7 @@ const CSS = `
 
 /* bottom nav */
 .gm-nav{position:fixed;bottom:0;left:0;right:0;z-index:20;display:flex;background:#fff;border-radius:24px 24px 0 0;box-shadow:0 -4px 24px rgba(0,0,0,.08);padding:6px 0 max(8px,env(safe-area-inset-bottom))}
-.gm-tb{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px 0 4px;background:none;border:none;cursor:pointer;font-family:'Nunito',sans-serif;font-size:10px;font-weight:700;color:#b0a48e;transition:color .2s}
+.gm-tb{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px 0 4px;background:none;border:none;cursor:pointer;font-family:inherit;font-size:10px;font-weight:700;color:#b0a48e;transition:color .2s}
 .gm-tb:active{transform:scale(.92)}
 .gm-tb.on{color:#b8892c}
 .gm-tb .ti{font-size:22px;transition:transform .2s}
@@ -122,7 +120,7 @@ const CSS = `
 
 /* play button */
 .gm-playw{position:fixed;bottom:72px;left:0;right:0;display:flex;justify-content:center;z-index:30;pointer-events:none}
-.gm-play{pointer-events:auto;background:linear-gradient(135deg,#b8892c,#8a6420);border:none;border-radius:999px;padding:16px 56px;font-family:'Nunito',sans-serif;font-size:16px;font-weight:900;letter-spacing:1px;color:#fff;cursor:pointer;box-shadow:0 6px 24px rgba(184,137,44,.45),0 2px 6px rgba(0,0,0,.15);transition:transform .15s,box-shadow .2s;text-transform:uppercase}
+.gm-play{pointer-events:auto;background:linear-gradient(135deg,#b8892c,#8a6420);border:none;border-radius:999px;padding:16px 56px;font-family:inherit;font-size:16px;font-weight:900;letter-spacing:1px;color:#fff;cursor:pointer;box-shadow:0 6px 24px rgba(184,137,44,.45),0 2px 6px rgba(0,0,0,.15);transition:transform .15s,box-shadow .2s;text-transform:uppercase}
 .gm-play:hover{transform:translateY(-2px);box-shadow:0 10px 36px rgba(184,137,44,.55),0 2px 6px rgba(0,0,0,.15)}
 .gm-play:active{transform:scale(.96)}
 
@@ -487,7 +485,7 @@ export function MainMenu({
 
                     <button disabled={maxed || !canAfford} onClick={() => { if (!maxed && canAfford) onUpgrade(selectedVehicle, cat); }}
                       style={{
-                        width: "100%", padding: "12px", borderRadius: 14, border: "none", fontFamily: "'Nunito',sans-serif", fontWeight: 800, fontSize: 13,
+                        width: "100%", padding: "12px", borderRadius: 14, border: "none", fontFamily: "inherit", fontWeight: 800, fontSize: 13,
                         cursor: maxed || !canAfford ? "default" : "pointer", transition: "transform .15s",
                         background: maxed ? "rgba(56,161,105,.08)" : canAfford ? "linear-gradient(135deg,#b8892c,#8a6420)" : "#ede5d8",
                         color: maxed ? "#38a169" : canAfford ? "#fff" : "#b0a48e",
