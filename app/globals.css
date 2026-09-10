@@ -629,50 +629,69 @@ canvas{
 .endScreen{
   position:absolute;
   inset:0;
-  /* Keep end screen ABOVE controls/gauges and usable even when content is long. */
   z-index: 60;
   display:flex;
-  align-items:center;
+  align-items:flex-start;
   justify-content:center;
   padding:
-    calc(16px + var(--safe-top))
+    calc(clamp(28px, 5vh, 52px) + var(--safe-top))
     calc(16px + var(--safe-right))
     calc(16px + var(--safe-bottom))
     calc(16px + var(--safe-left));
-  overflow:auto;
+  overflow:hidden;
   overscroll-behavior: contain;
-  background: rgba(245,251,255,.55);
-  backdrop-filter: blur(6px);
+  background:rgba(13,24,38,.28);
+  -webkit-backdrop-filter:blur(10px) saturate(.86);
+  backdrop-filter:blur(10px) saturate(.86);
 }
 .endCard{
   width:min(420px, calc(100% - 24px));
-  background: rgba(255,255,255,.9);
-  border: 1px solid rgba(0,0,0,.1);
-  border-radius:18px;
-  box-shadow: 0 30px 80px rgba(0,0,0,.18);
-  padding:18px 16px;
+  position:relative;
+  background:linear-gradient(160deg,rgba(255,253,248,.99),rgba(243,237,226,.98));
+  border:1px solid rgba(255,255,255,.88);
+  border-radius:24px;
+  box-shadow:0 32px 90px rgba(10,20,32,.28),inset 0 1px 0 #fff;
+  padding:20px;
   text-align:center;
-  /* If the card becomes tall, scroll inside the card instead of going under UI. */
-  max-height: calc(100% - 8px);
+  max-height:100%;
   overflow:auto;
   -webkit-overflow-scrolling: touch;
 }
+.endHeader{text-align:center}
+.endEyebrow{margin-bottom:5px;color:#a87719;font-size:9px;font-weight:1000;letter-spacing:1.8px;text-transform:uppercase}
 .endTitle{
-  font-size:26px;
+  color:#2a1f0e;
+  font-size:27px;
   font-weight:1000;
-  letter-spacing:.4px;
+  letter-spacing:-.6px;
+  line-height:1;
 }
 .endSub{
-  margin-top:8px;
-  font-weight:800;
-  opacity:.8;
-}
-.endBtns{
-  margin-top:14px;
+  margin-top:7px;
   display:flex;
+  align-items:center;
   justify-content:center;
-  gap:10px;
+  gap:7px;
+  color:#8a7d6a;
+  font-size:11px;
+  font-weight:800;
 }
+.endSub strong{color:#3b2d18;font-size:13px}
+.endSub span{padding-left:7px;border-left:1px solid rgba(92,71,38,.18)}
+.endSub em{border-radius:999px;background:#e8f8ee;color:#21804b;padding:3px 7px;font-size:9px;font-style:normal;font-weight:1000;text-transform:uppercase;letter-spacing:.4px}
+.endBtns{margin-top:10px;display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.endSecondary{appearance:none;min-width:0;min-height:49px;padding:7px 12px;border:1px solid rgba(104,78,35,.13);border-radius:15px;display:flex;align-items:center;gap:9px;text-align:left;color:#3b2d18;font-family:inherit;cursor:pointer;box-shadow:0 7px 18px rgba(72,52,21,.09);transition:transform .14s,box-shadow .14s,filter .14s}
+.endSecondary:hover{transform:translateY(-1px);filter:brightness(1.02);box-shadow:0 10px 22px rgba(72,52,21,.13)}
+.endSecondary:active{transform:translateY(1px)}
+.endSecondaryIcon{width:30px;height:30px;border-radius:10px;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+.endSecondaryIcon svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.endSecondary>span:last-child{min-width:0;display:flex;flex-direction:column;gap:2px}
+.endSecondary strong{font-size:10px;line-height:1.1}
+.endSecondary small{font-size:7.5px;line-height:1.2;font-weight:800;opacity:.68;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.endRetry{border-color:#d9bd86;background:linear-gradient(145deg,#f8f0df,#ead7b5);color:#493414}
+.endRetry .endSecondaryIcon{background:#e3bd68;color:#3a270b}
+.endMenu{border-color:#ded4c4;background:linear-gradient(145deg,#faf7f0,#ebe4d8);color:#4b4132}
+.endMenu .endSecondaryIcon{background:#ddd2c1;color:#51432f}
 
 .pauseBtn{
   pointer-events:auto;
@@ -1045,53 +1064,45 @@ canvas{
 
 /* --- Game over snapshot + onchain actions --- */
 .endShotWrap{
-  margin-top:12px;
-  border-radius:14px;
+  margin-top:13px;
+  border-radius:17px;
   overflow:hidden;
-  border:1px solid rgba(0,0,0,.10);
-  background: rgba(0,0,0,.04);
+  border:1px solid rgba(20,32,51,.12);
+  background:#dbeaf4;
+  box-shadow:0 12px 28px rgba(21,42,63,.12);
 }
 .endShot{display:block; width:100%; height:auto;}
 .endShotPlaceholder{padding:28px 0; font-weight:900; opacity:.6;}
 
 .endOnchain{
-  margin-top:12px;
-  padding:12px;
-  border-radius:14px;
-  border:1px solid rgba(0,0,0,.10);
-  background: rgba(255,255,255,.65);
-  text-align:left;
+  margin-top:13px;
+  padding:0;
 }
-.endOnchainTitle{
-  font-weight:1000;
-  letter-spacing:.4px;
-  font-size:12px;
-  text-transform:uppercase;
-  opacity:.75;
-  margin-bottom:8px;
-}
-.endOnchainMeta{font-size:12px; font-weight:800; opacity:.85; display:flex; flex-direction:column; gap:4px; min-width:0; overflow-wrap:anywhere; word-break:break-word;}
-.endOnchainLine{line-height:1.25;}
-.endOnchainWarn{color:#9b5d00; opacity:1;}
-.endOnchainErr{
-  color:#9a1a1a;
-  opacity:1;
-  /* Clamp very long revert/debug output so it doesn't blow up the end card. */
-  font-size: 11px;
-  line-height: 1.25;
-  overflow: hidden;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-  /* Modern/WebKit multi-line truncation + a fallback max-height. */
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
-  line-clamp: 3;
-  max-height: calc(1.25em * 3);
-}
-.endOnchainOk{color:#0a5d2a; opacity:1;}
-.endOnchainBtns{margin-top:10px; display:flex; gap:10px;}
-.endOnchainBtns .actionBtn{flex:1; justify-content:center;}
+.endOnchainBtns{display:grid;grid-template-columns:1fr;gap:9px}
+.endAction{appearance:none;position:relative;overflow:hidden;min-width:0;min-height:58px;padding:9px 13px;border-radius:16px;display:flex;align-items:center;gap:11px;text-align:left;font-family:inherit;cursor:pointer;transition:transform .15s,box-shadow .15s,filter .15s}
+.endAction::before{content:"";position:absolute;inset:0;background:linear-gradient(110deg,transparent 20%,rgba(255,255,255,.22) 48%,transparent 70%);transform:translateX(-115%);transition:transform .45s ease}
+.endAction:hover::before{transform:translateX(115%)}
+.endAction:hover{transform:translateY(-1px);filter:brightness(1.03)}
+.endAction:active{transform:translateY(1px)}
+.endAction:disabled{cursor:default;opacity:.62;transform:none;filter:none}
+.endActionIcon{position:relative;z-index:1;width:36px;height:36px;border-radius:12px;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto}
+.endActionIcon svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.endActionCopy{position:relative;z-index:1;min-width:0;display:flex;flex:1;flex-direction:column;gap:3px}
+.endAction strong{font-size:11px;line-height:1.15;white-space:nowrap}
+.endAction small{font-size:8.5px;line-height:1.25;font-weight:800;opacity:.7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.endActionArrow{position:relative;z-index:1;width:25px;height:25px;border-radius:999px;display:flex;align-items:center;justify-content:center;flex:0 0 auto;font-size:14px;font-weight:1000}
+.endActionScore{border:1px solid #9d721f;background:linear-gradient(135deg,#c59637,#8a6420);color:#fff;box-shadow:0 10px 24px rgba(138,100,32,.28)}
+.endActionScore .endActionIcon{background:rgba(255,252,242,.94);color:#8a6420;box-shadow:0 5px 12px rgba(82,54,10,.18)}
+.endActionScore .endActionArrow{background:rgba(255,255,255,.16);color:#fff4d4}
+.endActionMint{border:1px solid #dfc99e;background:linear-gradient(145deg,#fffaf0,#f0e4d0);color:#3b2b12;box-shadow:0 8px 20px rgba(91,65,24,.1)}
+.endActionMint .endActionIcon{background:linear-gradient(145deg,#e2b856,#bc8728);color:#fff;box-shadow:inset 0 1px 0 rgba(255,255,255,.35)}
+.endActionMint .endActionArrow{background:rgba(184,137,44,.13);color:#8a6420}
+.endStatus{margin-top:8px;display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:5px 10px;color:#596579;font-size:9px;font-weight:900;line-height:1.3}
+.endStatus span{min-width:0;overflow-wrap:anywhere}
+.endStatusOk{color:#19824b}
+.endStatusError{width:100%;color:#a22929;display:-webkit-box!important;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow:hidden}
+.endStatus a{color:#9d6b12;text-decoration:none}
+.endStatus a:hover{text-decoration:underline}
 
 /* When forcing landscape playfield inside portrait, tighten controls further */
 .stagePortrait .pedal{ width: min(180px, 38vw); height: clamp(70px, 10vh, 92px); }
@@ -1203,22 +1214,68 @@ html, body{
   width: 100% !important;
 }
 
-/* Game over dialog: must be scrollable on small landscape mini-app viewports */
+/* Game over dialog stays below the very top edge on desktop. */
 .endScreen{
   display: flex !important;
   align-items: flex-start;
   justify-content: center;
-  overflow: auto;
-  -webkit-overflow-scrolling: touch;
-  padding:
-    calc(12px + var(--safe-top))
-    calc(12px + var(--safe-right))
-    calc(12px + var(--safe-bottom))
-    calc(12px + var(--safe-left));
+  overflow:hidden;
 }
 .endCard{
   max-height: 100%;
   overflow: auto;
+}
+
+/* Phone/short landscape: one compact, no-scroll composition inside the game view. */
+@media (max-height:560px), (max-width:520px){
+  .endScreen{
+    align-items:center;
+    padding:
+      calc(7px + var(--safe-top))
+      calc(8px + var(--safe-right))
+      calc(7px + var(--safe-bottom))
+      calc(8px + var(--safe-left));
+  }
+  .endCard{
+    width:min(720px,100%);
+    max-height:100%;
+    overflow:hidden;
+    padding:10px;
+    border-radius:18px;
+    display:grid;
+    grid-template-columns:minmax(0,1.35fr) minmax(205px,.8fr);
+    grid-template-areas:
+      "header actions"
+      "shot actions"
+      "shot footer";
+    grid-template-rows:auto 1fr auto;
+    column-gap:10px;
+    row-gap:7px;
+  }
+  .endHeader{grid-area:header;text-align:left;display:flex;align-items:center;gap:8px;min-width:0;overflow:hidden}
+  .endEyebrow{display:none}
+  .endTitle{font-size:18px;white-space:nowrap}
+  .endSub{margin:0;justify-content:flex-start;gap:5px;font-size:8px;min-width:0;white-space:nowrap;overflow:hidden}
+  .endSub strong{font-size:10px}
+  .endSub span{padding-left:5px}
+  .endSub em{display:none}
+  .endShotWrap{grid-area:shot;margin:0;border-radius:12px;min-height:0;align-self:center}
+  .endShot{width:100%;max-height:calc(100vh - 55px);object-fit:contain}
+  .endOnchain{grid-area:actions;margin:0;padding:0;align-self:center;display:flex;flex-direction:column;justify-content:center;min-height:0}
+  .endOnchainBtns{grid-template-columns:1fr;gap:6px}
+  .endAction{min-height:49px;padding:6px 8px;border-radius:12px;gap:7px}
+  .endActionIcon{width:29px;height:29px;border-radius:9px}
+  .endActionIcon svg{width:15px;height:15px}
+  .endActionArrow{width:21px;height:21px;font-size:11px}
+  .endAction strong{font-size:9px}
+  .endAction small{font-size:7px}
+  .endStatus{margin-top:5px;font-size:7px;gap:3px 6px;max-height:31px;overflow:hidden}
+  .endBtns{grid-area:footer;margin:0;gap:6px;align-self:end}
+  .endSecondary{min-height:37px;padding:4px 7px;border-radius:11px;gap:6px}
+  .endSecondaryIcon{width:24px;height:24px;border-radius:8px}
+  .endSecondaryIcon svg{width:13px;height:13px}
+  .endSecondary strong{font-size:8px}
+  .endSecondary small{display:none}
 }
 
 /* Wallet picker */

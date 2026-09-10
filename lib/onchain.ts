@@ -245,17 +245,6 @@ export async function submitScoreMeters(
   return String(hash);
 }
 
-export async function getNextTokenId(runNftAddress: string): Promise<bigint> {
-  if (!runNftAddress) return 1n;
-
-  return (await publicClient.readContract({
-    address: runNftAddress as Address,
-    abi: runNftAbi,
-    functionName: "nextTokenId",
-    args: [],
-  })) as bigint;
-}
-
 export async function mintRunNft(
   runNftAddress: string,
   meters: number,
@@ -295,6 +284,16 @@ export async function mintRunNft(
   });
 
   return String(hash);
+}
+
+export async function waitForBaseTransaction(transactionHash: string): Promise<void> {
+  const receipt = await publicClient.waitForTransactionReceipt({
+    hash: transactionHash as `0x${string}`,
+    confirmations: 1,
+    pollingInterval: 1_200,
+    timeout: 180_000,
+  });
+  if (receipt.status !== "success") throw new Error("Transaction failed");
 }
 
 

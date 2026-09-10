@@ -240,7 +240,7 @@ export const HillClimbCanvas = forwardRef<
     seed?: number;
     onState: (s: HillClimbState) => void;
     bestM?: number;
-    onGameOver?: (p: { snapshotDataUrl: string | null; meters: number; status: "CRASH" | "OUT_OF_FUEL" }) => void;
+    onGameOver?: (p: { snapshotDataUrl: string | null; meters: number; coins: number; status: "CRASH" | "OUT_OF_FUEL" }) => void;
   }
 >(function HillClimbCanvas(props, ref) {
   const { headId, vehicleId, mapId, paused, miniMode, seed, onState, bestM, onGameOver } = props;
@@ -252,6 +252,7 @@ export const HillClimbCanvas = forwardRef<
   const vehicleIdRef = useRef(vehicleId);
   const mapIdRef = useRef(mapId);
   const miniModeRef = useRef(Boolean(miniMode));
+  const onGameOverRef = useRef(onGameOver);
 
   const throttleTargetRef = useRef(0);
   const throttleRef = useRef(0);
@@ -291,6 +292,7 @@ export const HillClimbCanvas = forwardRef<
   useEffect(() => { pausedRef.current = paused; }, [paused]);
   useEffect(() => { miniModeRef.current = Boolean(miniMode); }, [miniMode]);
   useEffect(() => { headIdRef.current = headId; }, [headId]);
+  useEffect(() => { onGameOverRef.current = onGameOver; }, [onGameOver]);
 
   const updateScaleForViewport = (cssW: number, cssH: number) => {
     const isPhone = miniModeRef.current || isPhoneSizedViewport(cssW, cssH);
@@ -546,7 +548,14 @@ export const HillClimbCanvas = forwardRef<
         if (sNow.status === "CRASH") audioManager.playCrash();
         lastEndStatusRef.current = sNow.status;
         snapshotRef.current = captureSnapshot() ?? snapshotRef.current;
-        try { onGameOver?.({ snapshotDataUrl: snapshotRef.current, meters: Math.max(0, Math.floor(sNow.distanceM)), status: sNow.status }); } catch { }
+        try {
+          onGameOverRef.current?.({
+            snapshotDataUrl: snapshotRef.current,
+            meters: Math.max(0, Math.floor(sNow.distanceM)),
+            coins: Math.max(0, Math.floor(sNow.coins)),
+            status: sNow.status,
+          });
+        } catch { }
       }
 
       if (sNow.status === "IDLE" || sNow.status === "RUN") lastEndStatusRef.current = null;

@@ -10,8 +10,12 @@
     "lint:fix": "eslint . --fix"
   },
   "dependencies": {
+    "@ipld/car": "^5.4.7",
     "@walletconnect/ethereum-provider": "2.23.10",
-    "next": "16.2.4",
+    "ipfs-car": "^3.1.0",
+    "ipfs-unixfs-exporter": "^13.7.3",
+    "multiformats": "^13.4.2",
+    "next": "16.3.4",
     "planck-js": "1.3.0",
     "react": "19.2.5",
     "react-dom": "19.2.5",
@@ -21,11 +25,14 @@
     "@types/node": "25.6.0",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
-    "eslint": "10.3.0",
-    "eslint-config-next": "16.2.4",
+    "eslint": "9.39.5",
+    "eslint-config-next": "16.3.4",
     "typescript": "6.0.3"
   },
   "engines": {
     "node": ">=20.9.0"
+  },
+  "overrides": {
+    "axios": "1.18.0"
   }
 }

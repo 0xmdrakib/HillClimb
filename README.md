@@ -22,6 +22,7 @@ The game is designed to work inside the Base App browser and in standard web bro
 - Upgrade categories for engine, suspension, tires, and fuel tank
 - Achievement system with coin rewards
 - Onchain best-score saving on Base mainnet
+- Run NFT minting with locally optimized artwork and Lighthouse IPFS storage
 - Base App support through standard injected wallets and the Web Share API
 - Optional paymaster proxy flow for sponsored contract transactions
 - Builder Code attribution support through ERC-8021 calldata suffixing
@@ -63,7 +64,7 @@ After a run ends, players can connect a wallet and save their score to the deplo
 
 ### Run NFT minting
 
-Run NFT minting is temporarily disabled in the app.
+The crash snapshot is compressed locally and packaged with OpenSea-compatible metadata before the wallet prompt. The package is uploaded through the protected server endpoint only after the mint transaction succeeds. The Lighthouse API key remains server-only.
 
 ### Gasless support
 

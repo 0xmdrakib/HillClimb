@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { Address } from "viem";
 import { HeadPicker } from "@/components/HeadPicker";
 import { loadHead, saveHead, HeadId, HEADS } from "@/lib/heads";
 import { VehicleId, VEHICLES, loadVehicle, saveVehicle } from "@/lib/vehicles";
-import { MapId, loadMap, saveMap } from "@/lib/maps";
+import { MapId, MAPS, loadMap, saveMap } from "@/lib/maps";
 import { AllUpgrades, loadAllUpgrades, saveAllUpgrades, upgradeCostForLevel, defaultUpgradeLevels, UPGRADE_CATEGORIES, UPGRADE_META, MAX_LEVEL } from "@/lib/upgrades";
 import { loadGarage, saveGarage, UnlockedVehicles, purchaseVehicle, loadLocalCoins, addLocalCoins, spendLocalCoins } from "@/lib/garage";
 import { loadAchievements, saveAchievements, UnlockedAchievements, checkRunAchievements, ACHIEVEMENTS, AchievementId } from "@/lib/achievements";
@@ -14,13 +15,16 @@ import {
   getWalletConnectProvider,
   listInjectedWallets,
   WALLETCONNECT_WALLET_ID,
+  type Eip1193Provider,
   type InjectedWallet,
 } from "@/lib/wallet";
 import {
   getOrConnectWallet, tryAutoConnectWallet, readBestMeters,
-  submitScoreMeters, sendEthTip, clearCachedWallet,
+  submitScoreMeters, mintRunNft, waitForBaseTransaction, sendEthTip, clearCachedWallet,
 } from "@/lib/onchain";
 import { audioManager } from "@/lib/audio";
+import { buildRunNftPackage, type RunNftPackage } from "@/lib/nftPackage";
+import { loadPendingRunMint, removePendingRunMint, savePendingRunMint } from "@/lib/pendingMint";
 
 const DEFAULT_INJECTED_WALLET = "any" as const;
 const LAST_WALLET_KEY = "jhc_last_wallet_id_v1";
@@ -60,6 +64,13 @@ function humanizeTxErr(err: any) {
   const code = e?.code ?? e?.cause?.code;
   const msg = String(e?.shortMessage ?? e?.message ?? e?.details ?? "").toLowerCase();
   if (code === 4001 || code === "ACTION_REJECTED" || msg.includes("user rejected") || msg.includes("rejected the request")) return "User rejected the tx";
+  if (msg.includes("no wallet provider") || msg.includes("no compatible wallet")) return "No compatible wallet found";
+  if (msg.includes("nft minting is not configured")) return "NFT minting is not configured";
+  if (msg.includes("run snapshot is unavailable")) return "Run snapshot is unavailable";
+  if (msg.includes("nft_storage_not_configured")) return "NFT storage is not configured";
+  if (msg.includes("rate_limited")) return "Too many attempts — please try again shortly";
+  if (msg.includes("lighthouse")) return "NFT storage is temporarily unavailable — retry is safe";
+  if (msg.includes("transaction_not_confirmed")) return "Mint confirmation is still pending — retry shortly";
   return "Transaction failed";
 }
 
@@ -206,13 +217,20 @@ export default function Page() {
   const [scoreBusy, setScoreBusy] = useState(false);
   const [connectBusy, setConnectBusy] = useState(false);
   const [scoreTx, setScoreTx] = useState<string | null>(null);
+  const [mintBusy, setMintBusy] = useState(false);
+  const [mintStage, setMintStage] = useState("");
+  const [mintTx, setMintTx] = useState<string | null>(null);
+  const [mintGatewayUrl, setMintGatewayUrl] = useState<string | null>(null);
+  const [hasPendingMint, setHasPendingMint] = useState(false);
   const [actionErr, setActionErr] = useState<string>("");
   const [walletModalOpen, setWalletModalOpen] = useState(false);
   const [walletChoices, setWalletChoices] = useState<InjectedWallet[]>([]);
   const [gameOverShot, setGameOverShot] = useState<string | null>(null);
   const [gameOverMeters, setGameOverMeters] = useState<number>(0);
+  const [gameOverCoins, setGameOverCoins] = useState<number>(0);
 
   const scoreboardAddress = (process.env.NEXT_PUBLIC_SCOREBOARD_ADDRESS ?? "").trim();
+  const runNftAddress = (process.env.NEXT_PUBLIC_RUNNFT_ADDRESS ?? "").trim();
   const walletConnectReady = Boolean((process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID ?? "").trim());
 
   const [state, setState] = useState<HillClimbState>({
@@ -221,7 +239,8 @@ export default function Page() {
   });
 
   const gameRef = useRef<HillClimbHandle | null>(null);
-  const walletRef = useRef<{ provider: any; address: string } | null>(null);
+  const walletRef = useRef<{ provider: Eip1193Provider; address: Address } | null>(null);
+  const pendingMintRef = useRef<{ package: RunNftPackage; txHash: string } | null>(null);
 
   useEffect(() => {
     if (gamePhase === "menu") audioManager.suspend();
@@ -419,7 +438,7 @@ export default function Page() {
   };
 
   const onDisconnectWallet = () => {
-    const provider = walletRef.current?.provider as any;
+    const provider = walletRef.current?.provider as (Eip1193Provider & { disconnect?: () => Promise<void> }) | undefined;
     const wasWalletConnect = walletSource === "WalletConnect";
 
     // Clear the app session first. Provider APIs vary and must never block local disconnect.
@@ -449,8 +468,8 @@ export default function Page() {
   };
 
   const onTryAgain = () => {
-    setPaused(false); setGameOverShot(null); setGameOverMeters(0);
-    setScoreBusy(false); setScoreTx(null); setActionErr("");
+    setPaused(false); setGameOverShot(null); setGameOverMeters(0); setGameOverCoins(0);
+    setScoreBusy(false); setScoreTx(null); setMintBusy(false); setMintStage(""); setMintTx(null); setMintGatewayUrl(null); setActionErr("");
     gameRef.current?.reset();
   };
 
@@ -462,10 +481,104 @@ export default function Page() {
       const addr = walletAddr ?? (await ensureConnected());
       const meters = Math.max(0, Math.floor(gameOverMeters || state.distanceM));
       const w = walletRef.current;
-      const tx = await submitScoreMeters(scoreboardAddress, meters, w ? { provider: w.provider, address: w.address as any } : undefined);
+      const tx = await submitScoreMeters(scoreboardAddress, meters, w ?? undefined);
       setScoreTx(tx); await refreshBest(addr);
     } catch (e: any) { setActionErr(humanizeTxErr(e)); } finally { setScoreBusy(false); }
   };
+
+  const finalizeMintStorage = async (pending: { package: RunNftPackage; txHash: string }) => {
+    await waitForBaseTransaction(pending.txHash);
+    setMintStage("Securing artwork on IPFS…");
+    const response = await fetch("/api/nft/finalize", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        txHash: pending.txHash,
+        rootCid: pending.package.rootCid,
+        tokenUri: pending.package.tokenUri,
+        carBase64: pending.package.carBase64,
+      }),
+    });
+    const result = await response.json().catch(() => null);
+    if (!response.ok || !result?.ok) throw new Error(result?.error || "NFT storage failed");
+    setMintGatewayUrl(String(result.gatewayUrl));
+    setMintStage("Minted & safely stored");
+    pendingMintRef.current = null;
+    setHasPendingMint(false);
+    await removePendingRunMint().catch(() => undefined);
+  };
+
+  const onMintNft = async () => {
+    setActionErr(""); setMintGatewayUrl(null); setMintBusy(true);
+    try {
+      if (!runNftAddress) throw new Error("NFT minting is not configured");
+
+      const existingPending = pendingMintRef.current;
+      if (existingPending) {
+        setMintTx(existingPending.txHash);
+        setMintStage("Confirming previous mint…");
+        await finalizeMintStorage(existingPending);
+        return;
+      }
+
+      if (!gameOverShot) throw new Error("Run snapshot is unavailable");
+      setMintTx(null);
+      setMintStage("Optimizing artwork locally…");
+      const nftPackage = await buildRunNftPackage({
+        snapshotDataUrl: gameOverShot,
+        meters: gameOverMeters || state.distanceM,
+        coins: gameOverCoins,
+        driver: HEADS[head].label,
+        vehicle: VEHICLES[selectedVehicle].name,
+        terrain: MAPS[selectedMap].name,
+        result: state.status === "OUT_OF_FUEL" ? "Out of fuel" : "Crash",
+        siteUrl: url,
+      });
+
+      setMintStage("Confirm mint in your wallet…");
+      const address = walletAddr ?? (await ensureConnected());
+      const wallet = walletRef.current;
+      const txHash = await mintRunNft(
+        runNftAddress,
+        gameOverMeters || state.distanceM,
+        head === "jesse" ? 0 : 1,
+        nftPackage.tokenUri,
+        wallet ?? undefined,
+      );
+      const pending = { package: nftPackage, txHash };
+      pendingMintRef.current = pending;
+      setHasPendingMint(true);
+      await savePendingRunMint(pending).catch(() => undefined);
+      setMintTx(txHash);
+      setMintStage(`Confirming on Base for ${shortHash(address)}…`);
+      await finalizeMintStorage(pending);
+    } catch (error: unknown) {
+      const message = humanizeTxErr(error);
+      if (/transaction failed/i.test(message)) {
+        pendingMintRef.current = null;
+        setHasPendingMint(false);
+        await removePendingRunMint().catch(() => undefined);
+      }
+      setActionErr(message);
+      setMintStage(pendingMintRef.current ? "Mint confirmed — storage retry available" : "");
+    } finally {
+      setMintBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    let active = true;
+    void loadPendingRunMint()
+      .then((pending) => {
+        if (!active || !pending) return;
+        pendingMintRef.current = pending;
+        setHasPendingMint(true);
+        setMintTx(pending.txHash);
+        setMintStage("Mint confirmed — storage retry available");
+      })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, []);
 
   const handleSelectVehicle = (vid: VehicleId) => { setSelectedVehicle(vid); };
   const handleSelectMap = (mid: MapId) => { setSelectedMap(mid); };
@@ -483,23 +596,24 @@ export default function Page() {
     setAllUpgrades(prev => { const next = { ...prev, [vid]: { ...prev[vid], [c]: cur + 1 } }; saveAllUpgrades(next); return next; });
   };
 
-  const onGameOver = (p: { snapshotDataUrl: string | null; meters: number; status: "CRASH" | "OUT_OF_FUEL" }) => {
-    setGameOverShot(p.snapshotDataUrl); setGameOverMeters(p.meters);
-    const freshCoins = loadLocalCoins(); setCoins(freshCoins);
+  const onGameOver = (p: { snapshotDataUrl: string | null; meters: number; coins: number; status: "CRASH" | "OUT_OF_FUEL" }) => {
+    setGameOverShot(p.snapshotDataUrl); setGameOverMeters(p.meters); setGameOverCoins(p.coins);
+    const earnedRunCoins = Math.max(0, Math.floor(p.coins));
     const runs = totalRuns + 1; setTotalRuns(runs);
     try { localStorage.setItem(TOTAL_RUNS_KEY, String(runs)); } catch { }
     const { newly, totalReward } = checkRunAchievements({
-      distanceM: p.meters, coins: state.coins, flips: state.flips,
+      distanceM: p.meters, coins: earnedRunCoins, flips: state.flips,
       maxSpeedKmh: state.speedKmh, fuelRemaining: state.fuel,
       map: selectedMap, prevUnlocked: achievements,
     });
     if (newly.length > 0) {
       const nextAch = { ...achievements }; newly.forEach(id => { nextAch[id] = true; });
       setAchievements(nextAch); saveAchievements(nextAch);
-      if (totalReward > 0) { const nc = addLocalCoins(totalReward); setCoins(nc); }
       const def = ACHIEVEMENTS.find(a => a.id === newly[0]);
       if (def) { setNewAch({ name: def.name, emoji: def.emoji, reward: def.reward }); setTimeout(() => setNewAch(null), 3500); }
     }
+    const creditedCoins = earnedRunCoins + totalReward;
+    setCoins(creditedCoins > 0 ? addLocalCoins(creditedCoins) : loadLocalCoins());
   };
 
   const fuel01 = clamp01(state.fuel / 100);
@@ -654,7 +768,7 @@ export default function Page() {
                           if (!ethUsd || ethUsd <= 0) { setTipErr("ETH price unavailable"); return; }
                           setTipBusy(true); await ensureConnected();
                           const w = walletRef.current;
-                          const tx = await sendEthTip(tipTo, (usd2 / ethUsd).toFixed(6), w ? { provider: w.provider, address: w.address as any } : undefined);
+                          const tx = await sendEthTip(tipTo, (usd2 / ethUsd).toFixed(6), w ?? undefined);
                           setTipTx(tx);
                         } catch (e: any) { setTipErr(humanizeTxErr(e)); } finally { setTipBusy(false); }
                       }}>{tipBusy ? "Sending…" : "Send tip"}</button>
@@ -680,28 +794,43 @@ export default function Page() {
             {state.status !== "RUN" && !isEnd ? <div className="centerHint">Tap GAS to start</div> : null}
 
             {isEnd ? (
-              <div className="endScreen"><div className="endCard">
-                <div className="endTitle">{state.status === "CRASH" ? "CRASH!" : "OUT OF FUEL"}</div>
-                <div className="endSub">{fmtM(state.distanceM)}m • best {fmtM(bestOnchainM)}m{beatOnchainBest ? " • NEW BEST (pending onchain)" : ""}</div>
-                <div className="endShotWrap">{gameOverShot ? <img className="endShot" src={gameOverShot} alt="Run snapshot" /> : <div className="endShotPlaceholder">Snapshot</div>}</div>
+              <div className="endScreen"><div className="endCard" role="dialog" aria-modal="true" aria-label="Run complete">
+                <div className="endHeader">
+                  <div className="endEyebrow">Run complete</div>
+                  <div className="endTitle">{state.status === "CRASH" ? "CRASH!" : "OUT OF FUEL"}</div>
+                  <div className="endSub"><strong>{fmtM(state.distanceM)}m</strong><span>Best {fmtM(bestOnchainM)}m</span>{beatOnchainBest ? <em>New best</em> : null}</div>
+                </div>
+                <div className="endShotWrap">{gameOverShot ? <img className="endShot" src={gameOverShot} alt="Run snapshot" /> : <div className="endShotPlaceholder">Preparing snapshot…</div>}</div>
                 <div className="endOnchain">
-                  <div className="endOnchainTitle">Onchain (optional)</div>
-                  <div className="endOnchainRow"><div className="endOnchainMeta">
-                    <div className="endOnchainLine">Network: Base mainnet</div>
-                    <div className="endOnchainLine">Wallet: {walletAddr ?? "Not connected"}{walletAddr && walletSource ? ` (${walletSource})` : ""}</div>
-                    {!scoreboardAddress ? <div className="endOnchainWarn">Set the scoreboard contract address in .env.local to enable.</div> : null}
-                    {scoreTx ? <div className="endOnchainOk">Score tx: {shortHash(scoreTx)}</div> : null}
-                    {actionErr ? <div className="endOnchainErr">{actionErr}</div> : null}
-                  </div></div>
                   <div className="endOnchainBtns">
-                    {!walletAddr ? <button type="button" className="actionBtn btnDark" disabled={scoreBusy || connectBusy} onClick={() => void onConnectWalletClick()}>{connectBusy ? "Connecting…" : "Connect wallet"}</button> : null}
-                    <button type="button" className="actionBtn btnDark" disabled={scoreBusy || !scoreboardAddress || connectBusy} onClick={onSubmitScore}>{scoreBusy ? "Submitting…" : "Save score onchain"}</button>
+                    <button type="button" className="endAction endActionScore" disabled={scoreBusy || mintBusy || connectBusy} onClick={onSubmitScore}>
+                      <span className="endActionIcon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 4.75h11.5L19 7.3v11.95H5z"/><path d="M8 4.75v5h7v-5M8.5 19.25v-5.5h7v5.5"/></svg></span>
+                      <span className="endActionCopy"><strong>{scoreBusy ? "Saving…" : "Save score"}</strong><small>Permanent record on Base</small></span>
+                      <span className="endActionArrow" aria-hidden="true">→</span>
+                    </button>
+                    <button type="button" className="endAction endActionMint" disabled={mintBusy || scoreBusy || connectBusy} onClick={() => void onMintNft()}>
+                      <span className="endActionIcon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m12 3 7 4v10l-7 4-7-4V7z"/><path d="m8.5 12 2.15 2.15L15.8 9"/></svg></span>
+                      <span className="endActionCopy"><strong>{mintBusy ? "Working…" : hasPendingMint ? "Retry storage" : "Mint as NFT"}</strong><small>{mintBusy && mintStage ? mintStage : "Collect this exact finish"}</small></span>
+                      <span className="endActionArrow" aria-hidden="true">→</span>
+                    </button>
                   </div>
+                  {scoreTx || mintStage || actionErr ? <div className="endStatus" aria-live="polite">
+                    {scoreTx ? <span className="endStatusOk">✓ Score saved · {shortHash(scoreTx)}</span> : null}
+                    {mintStage ? <span className={mintGatewayUrl ? "endStatusOk" : ""}>{mintGatewayUrl ? "✓ " : ""}{mintStage}</span> : null}
+                    {mintTx && !mintGatewayUrl ? <a href={`https://basescan.org/tx/${mintTx}`} target="_blank" rel="noreferrer">View mint transaction ↗</a> : null}
+                    {mintGatewayUrl ? <a href={mintGatewayUrl} target="_blank" rel="noreferrer">View NFT metadata ↗</a> : null}
+                    {actionErr ? <span className="endStatusError">{actionErr}</span> : null}
+                  </div> : null}
                 </div>
                 <div className="endBtns">
-                  <button type="button" className="actionBtn btnPrimary" onClick={onTryAgain}>Try again</button>
-                  <button type="button" className="actionBtn btnDark" onClick={doShare}>Share</button>
-                  <button type="button" className="actionBtn btnDark" onClick={() => { audioManager.suspend(); setGamePhase("menu"); }}>← Menu</button>
+                  <button type="button" className="endSecondary endRetry" aria-label="Try again" onClick={onTryAgain}>
+                    <span className="endSecondaryIcon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 8V4m0 0h4M5 4l3 3a7 7 0 1 1-2 8"/></svg></span>
+                    <span><strong>Try again</strong><small>Beat this run</small></span>
+                  </button>
+                  <button type="button" className="endSecondary endMenu" aria-label="Back to menu" onClick={() => { audioManager.suspend(); setGamePhase("menu"); }}>
+                    <span className="endSecondaryIcon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 5h5v5H5zM14 5h5v5h-5zM5 14h5v5H5zM14 14h5v5h-5z"/></svg></span>
+                    <span><strong>Menu</strong><small>Change your setup</small></span>
+                  </button>
                 </div>
               </div></div>
             ) : null}

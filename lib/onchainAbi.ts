@@ -19,6 +19,18 @@ export const scoreboardAbi = [
 
 export const runNftAbi = [
   {
+    type: "event",
+    name: "RunMinted",
+    anonymous: false,
+    inputs: [
+      { name: "player", type: "address", indexed: true },
+      { name: "tokenId", type: "uint256", indexed: true },
+      { name: "meters", type: "uint256", indexed: false },
+      { name: "driverId", type: "uint8", indexed: false },
+      { name: "tokenURI", type: "string", indexed: false },
+    ],
+  },
+  {
     type: "function",
     name: "nextTokenId",
     stateMutability: "view",
