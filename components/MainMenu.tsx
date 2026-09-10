@@ -41,6 +41,15 @@ function shortWalletAddress(address?: string | null) {
   return address.length > 12 ? `${address.slice(0, 6)}…${address.slice(-4)}` : address;
 }
 
+function CoinBalance({ coins, className = "" }: { coins: number; className?: string }) {
+  return (
+    <div className={`gm-coin gm-coinCompact ${className}`.trim()} aria-label="Coins balance">
+      <div className="ico">🪙</div>
+      <span>{coins.toLocaleString()}</span>
+    </div>
+  );
+}
+
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&display=swap');
 
@@ -64,6 +73,8 @@ const CSS = `
 /* coin badge */
 .gm-coin{display:inline-flex;align-items:center;gap:6px;background:linear-gradient(135deg,#b8892c,#d4ab55);border-radius:999px;padding:6px 14px 6px 9px;color:#fff;font-weight:800;font-size:14px;box-shadow:0 2px 10px rgba(184,137,44,.35);white-space:nowrap}
 .gm-coin .ico{width:22px;height:22px;border-radius:50%;background:rgba(255,255,255,.25);display:flex;align-items:center;justify-content:center;font-size:13px}
+.gm-coin.gm-coinCompact{font-size:12px;padding:4px 12px 4px 8px}
+.gm-coin.gm-coinCompact .ico{width:18px;height:18px;font-size:11px}
 
 /* wallet badge */
 .gm-wallet{appearance:none;border:1px solid rgba(42,31,14,.10);border-radius:999px;background:rgba(255,255,255,.90);color:#2a1f0e;min-height:38px;padding:6px 11px;display:inline-flex;align-items:center;gap:8px;font-family:'Nunito',sans-serif;font-weight:900;font-size:12px;box-shadow:0 4px 16px rgba(42,31,14,.08);cursor:pointer;white-space:nowrap}
@@ -76,9 +87,6 @@ const CSS = `
 .gm-walletPower:hover{background:#fff;color:#6b5d4a}
 .gm-walletPower:active,.gm-wallet:active{transform:translateY(1px)}
 .gm-errorPill{position:relative;z-index:11;margin:-4px 18px 8px auto;width:fit-content;max-width:calc(100% - 36px);border-radius:999px;background:#fff1f1;color:#d73535;border:1px solid rgba(215,53,53,.16);padding:6px 10px;font-size:11px;font-weight:900;box-shadow:0 4px 16px rgba(215,53,53,.08)}
-.gm-pageCoin{position:absolute;top:calc(54px + var(--gm-top-inset));right:16px;z-index:12;pointer-events:none}
-.gm-pageCoinNudge{right:66px}
-
 @media (max-width:390px){
   .gm-top{align-items:flex-start;gap:10px;padding:var(--gm-top-inset) 14px 8px}
   .gm-brand{min-width:0}
@@ -89,8 +97,6 @@ const CSS = `
   .gm-walletPower svg{width:14px;height:14px}
   .gm-coin{font-size:12px;padding:5px 12px 5px 8px}
   .gm-coin .ico{width:19px;height:19px;font-size:11px}
-  .gm-pageCoin{top:calc(46px + var(--gm-top-inset));right:14px}
-  .gm-pageCoinNudge{right:58px}
 }
 
 .gm-homeHero{position:relative;padding:28px 20px 22px;text-align:center}
@@ -138,6 +144,8 @@ const CSS = `
 
 /* section title */
 .gm-sec{font-size:20px;font-weight:900;margin-bottom:14px;display:flex;align-items:center;gap:8px}
+.gm-sectionHeader{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}
+.gm-sectionHeader .gm-sec{margin-bottom:0}
 
 /* map thumb */
 .gm-mthumb{width:56px;height:56px;border-radius:16px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:26px;position:relative;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.1)}
@@ -182,8 +190,6 @@ export function MainMenu({
   };
 
   const btnLabel = tab === "garage" ? "▶ Next: Select Map" : "▶ Start Race";
-  const showPageCoin = tab === "garage" || tab === "maps";
-
   return (
     <div className="gm">
       <style>{CSS}</style>
@@ -221,12 +227,6 @@ export function MainMenu({
         </div>
       </div>
       {walletError ? <div className="gm-errorPill">⚠ {walletError}</div> : null}
-      {showPageCoin ? (
-        <div className="gm-pageCoin gm-coin" aria-label="Coins balance">
-          <div className="ico">🪙</div>
-          <span>{coins.toLocaleString()}</span>
-        </div>
-      ) : null}
 
       {/* ═══ BODY ═══ */}
       <div ref={scrollRef} className="gm-body">
@@ -239,10 +239,7 @@ export function MainMenu({
               background: "linear-gradient(150deg,#faf6ed 0%,#f3ead8 100%)",
             }}>
               <div className="gm-homeHero">
-                <div className="gm-homeHeroCoin gm-coin" aria-label="Coins balance">
-                  <div className="ico">🪙</div>
-                  <span>{coins.toLocaleString()}</span>
-                </div>
+                <CoinBalance coins={coins} className="gm-homeHeroCoin" />
               <div style={{ fontSize: 64, lineHeight: 1, marginBottom: 12 }}>{vc.emoji}</div>
               <div style={{ fontSize: 22, fontWeight: 900, color: "#2a1f0e", marginBottom: 4 }}>{vc.name}</div>
               <div style={{ fontSize: 13, color: "#8a7d6a", marginBottom: 14 }}>{vc.tagline}</div>
@@ -301,7 +298,10 @@ export function MainMenu({
 
             {/* Driver picker */}
             <div>
-              <div className="gm-sec">👤 Driver</div>
+              <div className="gm-sectionHeader">
+                <div className="gm-sec">👤 Driver</div>
+                <CoinBalance coins={coins} />
+              </div>
               <div style={{ display: "flex", gap: 12 }}>
                 {(Object.keys(HEADS) as HeadId[]).map(hid => {
                   const sel = selectedHead === hid;
@@ -403,7 +403,10 @@ export function MainMenu({
         {/* ══════ MAPS ══════ */}
         {tab === "maps" && (
           <div>
-            <div className="gm-sec">🗺️ Choose Terrain</div>
+            <div className="gm-sectionHeader">
+              <div className="gm-sec">🗺️ Choose Terrain</div>
+              <CoinBalance coins={coins} />
+            </div>
             <div style={{ fontSize: 13, color: "#8a7d6a", marginBottom: 16, marginTop: -8 }}>Each map has unique gravity, grip, and weather effects</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
               {MAP_ORDER.map(mid => {
@@ -443,10 +446,7 @@ export function MainMenu({
           <div>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
               <div className="gm-sec" style={{ marginBottom: 0 }}>⚙️ Upgrades</div>
-              <div className="gm-coin" style={{ fontSize: 12, padding: "4px 12px 4px 8px" }}>
-                <div className="ico" style={{ width: 18, height: 18, fontSize: 11 }}>🪙</div>
-                <span>{coins.toLocaleString()}</span>
-              </div>
+              <CoinBalance coins={coins} />
             </div>
             <div style={{ fontSize: 13, color: "#8a7d6a", marginBottom: 16 }}>Upgrading: <strong style={{ color: "#b8892c" }}>{vc.name}</strong></div>
 
