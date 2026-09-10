@@ -45,6 +45,8 @@ async function withStore<T>(mode: IDBTransactionMode, action: (store: IDBObjectS
 function isValidPending(value: unknown): value is PendingRunMint {
   const pending = value as PendingRunMint;
   const nftPackage = pending?.package;
+  const tokenUri = nftPackage?.tokenUri ?? "";
+  const validTokenUri = tokenUri === `ipfs://${nftPackage?.rootCid}` || tokenUri === `ipfs://${nftPackage?.rootCid}/metadata.json`;
   return (
     pending?.version === 1 &&
     Number.isFinite(pending.savedAt) &&
@@ -52,7 +54,7 @@ function isValidPending(value: unknown): value is PendingRunMint {
     Date.now() - pending.savedAt <= MAX_AGE_MS &&
     /^0x[0-9a-fA-F]{64}$/.test(pending.txHash) &&
     /^b[a-z2-7]{40,100}$/.test(nftPackage?.rootCid ?? "") &&
-    nftPackage?.tokenUri === `ipfs://${nftPackage?.rootCid}/metadata.json` &&
+    validTokenUri &&
     typeof nftPackage?.carBase64 === "string" &&
     nftPackage.carBase64.length > 0 &&
     nftPackage.carBase64.length <= 1_150_000 &&

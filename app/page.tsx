@@ -221,6 +221,9 @@ export default function Page() {
   const [mintStage, setMintStage] = useState("");
   const [mintTx, setMintTx] = useState<string | null>(null);
   const [mintGatewayUrl, setMintGatewayUrl] = useState<string | null>(null);
+  const [mintArtworkUrl, setMintArtworkUrl] = useState<string | null>(null);
+  const [mintOpenSeaUrl, setMintOpenSeaUrl] = useState<string | null>(null);
+  const [mintCollectionUrl, setMintCollectionUrl] = useState<string | null>(null);
   const [hasPendingMint, setHasPendingMint] = useState(false);
   const [actionErr, setActionErr] = useState<string>("");
   const [walletModalOpen, setWalletModalOpen] = useState(false);
@@ -469,7 +472,8 @@ export default function Page() {
 
   const onTryAgain = () => {
     setPaused(false); setGameOverShot(null); setGameOverMeters(0); setGameOverCoins(0);
-    setScoreBusy(false); setScoreTx(null); setMintBusy(false); setMintStage(""); setMintTx(null); setMintGatewayUrl(null); setActionErr("");
+    setScoreBusy(false); setScoreTx(null); setMintBusy(false); setMintStage(""); setMintTx(null); setMintGatewayUrl(null);
+    setMintArtworkUrl(null); setMintOpenSeaUrl(null); setMintCollectionUrl(null); setActionErr("");
     gameRef.current?.reset();
   };
 
@@ -501,15 +505,24 @@ export default function Page() {
     });
     const result = await response.json().catch(() => null);
     if (!response.ok || !result?.ok) throw new Error(result?.error || "NFT storage failed");
-    setMintGatewayUrl(String(result.gatewayUrl));
-    setMintStage("Minted & safely stored");
+    setMintGatewayUrl(String(result.metadataUrl || result.gatewayUrl));
+    setMintArtworkUrl(result.artworkUrl ? String(result.artworkUrl) : null);
+    setMintOpenSeaUrl(result.openSeaUrl ? String(result.openSeaUrl) : null);
+    setMintCollectionUrl(result.collectionUrl ? String(result.collectionUrl) : null);
+    setMintStage(
+      result.openSeaRefresh === "queued"
+        ? "IPFS verified · OpenSea refresh queued"
+        : result.openSeaRefresh === "failed"
+          ? "IPFS verified · OpenSea refresh pending"
+          : "Minted · artwork verified on IPFS",
+    );
     pendingMintRef.current = null;
     setHasPendingMint(false);
     await removePendingRunMint().catch(() => undefined);
   };
 
   const onMintNft = async () => {
-    setActionErr(""); setMintGatewayUrl(null); setMintBusy(true);
+    setActionErr(""); setMintGatewayUrl(null); setMintArtworkUrl(null); setMintOpenSeaUrl(null); setMintCollectionUrl(null); setMintBusy(true);
     try {
       if (!runNftAddress) throw new Error("NFT minting is not configured");
 
@@ -818,8 +831,11 @@ export default function Page() {
                     {scoreTx || mintStage || actionErr ? <div className="endStatus" aria-live="polite">
                       {scoreTx ? <span className="endStatusOk">✓ Score saved · {shortHash(scoreTx)}</span> : null}
                       {mintStage ? <span className={mintGatewayUrl ? "endStatusOk" : ""}>{mintGatewayUrl ? "✓ " : ""}{mintStage}</span> : null}
-                      {mintTx && !mintGatewayUrl ? <a href={`https://basescan.org/tx/${mintTx}`} target="_blank" rel="noreferrer">View mint transaction ↗</a> : null}
-                      {mintGatewayUrl ? <a href={mintGatewayUrl} target="_blank" rel="noreferrer">View NFT metadata ↗</a> : null}
+                      {mintTx ? <a href={`https://basescan.org/tx/${mintTx}`} target="_blank" rel="noreferrer">BaseScan ↗</a> : null}
+                      {mintArtworkUrl ? <a href={mintArtworkUrl} target="_blank" rel="noreferrer">Artwork ↗</a> : null}
+                      {mintGatewayUrl ? <a href={mintGatewayUrl} target="_blank" rel="noreferrer">Metadata ↗</a> : null}
+                      {mintOpenSeaUrl ? <a href={mintOpenSeaUrl} target="_blank" rel="noreferrer">OpenSea ↗</a> : null}
+                      {mintCollectionUrl ? <a href={mintCollectionUrl} target="_blank" rel="noreferrer">Collection ↗</a> : null}
                       {actionErr ? <span className="endStatusError">{actionErr}</span> : null}
                     </div> : null}
                   </div>

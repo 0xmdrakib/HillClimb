@@ -1,6 +1,5 @@
 import {
   CAREncoderStream,
-  createDirectoryEncoderStream,
   createFileEncoderStream,
   type Block,
 } from "ipfs-car";
@@ -74,14 +73,14 @@ async function collectBlocks(stream: ReadableStream<Block>): Promise<Block[]> {
   return blocks;
 }
 
-async function encodeCar(blocks: Block[], root: Block["cid"]): Promise<Uint8Array> {
+async function encodeCar(blocks: Block[], roots: Block["cid"][]): Promise<Uint8Array> {
   const blockStream = new ReadableStream<Block>({
     start(controller) {
       for (const block of blocks) controller.enqueue(block);
       controller.close();
     },
   });
-  const carStream = blockStream.pipeThrough(new CAREncoderStream([root]));
+  const carStream = blockStream.pipeThrough(new CAREncoderStream(roots));
   return new Uint8Array(await new Response(carStream).arrayBuffer());
 }
 
@@ -99,7 +98,8 @@ export async function buildRunNftPackage(input: RunNftPackageInput): Promise<Run
   const imageBlob = await compressSnapshot(input.snapshotDataUrl);
   const imageFile = new File([imageBlob], "run.jpg", { type: "image/jpeg" });
   const imageBlocks = await collectBlocks(createFileEncoderStream(imageFile));
-  const imageCid = imageBlocks.at(-1)!.cid.toString();
+  const imageRoot = imageBlocks.at(-1)!.cid;
+  const imageCid = imageRoot.toString();
   const meters = Math.max(0, Math.floor(input.meters));
   const coins = Math.max(0, Math.floor(input.coins));
 
@@ -128,15 +128,18 @@ export async function buildRunNftPackage(input: RunNftPackageInput): Promise<Run
     "metadata.json",
     { type: "application/json" },
   );
-  const blocks = await collectBlocks(createDirectoryEncoderStream([imageFile, metadataFile]));
-  const root = blocks.at(-1)!.cid;
-  const car = await encodeCar(blocks, root);
+  const metadataBlocks = await collectBlocks(createFileEncoderStream(metadataFile));
+  const metadataRoot = metadataBlocks.at(-1)!.cid;
+  // Both files are CAR roots. Lighthouse pins the exact metadata and image CIDs
+  // after the mint succeeds, while tokenURI stays the marketplace-friendly
+  // `ipfs://<metadata CID>` form.
+  const car = await encodeCar([...metadataBlocks, ...imageBlocks], [metadataRoot, imageRoot]);
 
   return {
     carBase64: bytesToBase64(car),
     carBytes: car.byteLength,
     imageBytes: imageBlob.size,
-    rootCid: root.toString(),
-    tokenUri: `ipfs://${root.toString()}/metadata.json`,
+    rootCid: metadataRoot.toString(),
+    tokenUri: `ipfs://${metadataRoot.toString()}`,
   };
 }
