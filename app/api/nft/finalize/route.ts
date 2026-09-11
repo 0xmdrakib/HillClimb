@@ -259,10 +259,13 @@ async function validateArchive(
   if (imageEntry.cid.toString() !== imageCid) throw new Error("image_cid_mismatch");
   const imageBytes = await readEntryBytes(imageEntry, MAX_IMAGE_BYTES);
   const dimensions = jpegDimensions(imageBytes);
-  if (!dimensions || dimensions.width < 480 || dimensions.height < 270 || dimensions.width > 960 || dimensions.height > 540) {
+  if (!dimensions || dimensions.width < 480 || dimensions.height < 270 || dimensions.width > 960 || dimensions.height > 960) {
     throw new Error("invalid_image");
   }
-  if (Math.abs(dimensions.width / dimensions.height - 16 / 9) > 0.02) throw new Error("invalid_image_ratio");
+  const ratio = dimensions.width / dimensions.height;
+  const isLandscape = Math.abs(ratio - 16 / 9) <= 0.02;
+  const isSquare = Math.abs(ratio - 1) <= 0.02;
+  if (!isLandscape && !isSquare) throw new Error("invalid_image_ratio");
 
   const expectedImageUri = `ipfs://${imageCid}`;
   const expectedDeliveryImageUri = `${LIGHTHOUSE_DELIVERY_GATEWAY}/${imageCid}`;
@@ -569,10 +572,11 @@ export async function POST(request: Request) {
       // Lighthouse's normal add endpoint stores the content itself; uploading
       // a CAR here would only register a `carfile.car` record and leave these
       // roots unavailable to gateways and marketplaces.
-      await Promise.all([
-        uploadFiles(apiKey, [imageFile], archive.imageCid, false),
-        uploadFiles(apiKey, [metadataFile], rootCid, false),
-      ]);
+      // Keep the proven two-CID structure, but avoid concurrent Lighthouse
+      // writes racing each other on the paid gateway. Artwork is stored first;
+      // metadata, which references it, is stored second.
+      await uploadFiles(apiKey, [imageFile], archive.imageCid, false);
+      await uploadFiles(apiKey, [metadataFile], rootCid, false);
     }
   } catch (error) {
     const reason = error instanceof Error ? error.message : "lighthouse_upload_failed";
