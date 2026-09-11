@@ -20,14 +20,12 @@ import {
 } from "@/lib/apiProtection";
 import { runNftAbi } from "@/lib/onchainAbi";
 import { LIGHTHOUSE_DELIVERY_GATEWAY, LIGHTHOUSE_LEGACY_PUBLIC_GATEWAY } from "@/lib/nftGateway";
-import { NFT_PIPELINE_VERSION } from "@/lib/nftPipeline";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 120;
+export const maxDuration = 60;
 
-const LIGHTHOUSE_CAR_UPLOAD_URL = "https://upload.lighthouse.storage/api/v0/dag/import";
-const LIGHTHOUSE_UPLOAD_INDEX_URL = "https://api.lighthouse.storage/api/user/files_uploaded?lastKey=null&fileType=all";
+const LIGHTHOUSE_FILE_UPLOAD_URL = "https://upload.lighthouse.storage/api/v0/add";
 const OPENSEA_API_URL = "https://api.opensea.io/api/v2";
 const OPENSEA_COLLECTION_URL = "https://opensea.io/collection/jesse-hill-climb";
 const MAX_BODY_BYTES = 1_200_000;
@@ -187,14 +185,12 @@ async function validateArchive(
   const isFlatPackage = mint.tokenURI === `ipfs://${claimedRoot}`
     || mint.tokenURI === `${LIGHTHOUSE_LEGACY_PUBLIC_GATEWAY}/${claimedRoot}`
     || mint.tokenURI === `${LIGHTHOUSE_DELIVERY_GATEWAY}/${claimedRoot}`;
-  const isDirectoryPackage = mint.tokenURI === `ipfs://${claimedRoot}/metadata.json`
-    || mint.tokenURI === `${LIGHTHOUSE_DELIVERY_GATEWAY}/${claimedRoot}/metadata.json`
-    || mint.tokenURI === `${LIGHTHOUSE_LEGACY_PUBLIC_GATEWAY}/${claimedRoot}/metadata.json`;
+  const isLegacyDirectoryPackage = mint.tokenURI === `ipfs://${claimedRoot}/metadata.json`;
   if (
-    (!isFlatPackage && !isDirectoryPackage) ||
+    (!isFlatPackage && !isLegacyDirectoryPackage) ||
     !rootCids.includes(claimedRoot) ||
     (isFlatPackage && roots.length !== 2) ||
-    (isDirectoryPackage && (roots.length !== 1 || roots[0].toString() !== claimedRoot))
+    (isLegacyDirectoryPackage && (roots.length !== 1 || roots[0].toString() !== claimedRoot))
   ) throw new Error("root_mismatch");
 
   let blockCount = 0;
@@ -263,18 +259,15 @@ async function validateArchive(
   if (imageEntry.cid.toString() !== imageCid) throw new Error("image_cid_mismatch");
   const imageBytes = await readEntryBytes(imageEntry, MAX_IMAGE_BYTES);
   const dimensions = jpegDimensions(imageBytes);
-  const properties = isRecord(metadata.properties) ? metadata.properties : null;
-  const isSquareArtwork = properties?.artwork_format === "square-v1";
-  const maxHeight = isSquareArtwork ? 960 : 540;
-  if (!dimensions || dimensions.width < 480 || dimensions.height < 270 || dimensions.width > 960 || dimensions.height > maxHeight) {
+  if (!dimensions || dimensions.width < 480 || dimensions.height < 270 || dimensions.width > 960 || dimensions.height > 540) {
     throw new Error("invalid_image");
   }
-  const expectedRatio = isSquareArtwork ? 1 : 16 / 9;
-  if (Math.abs(dimensions.width / dimensions.height - expectedRatio) > 0.02) throw new Error("invalid_image_ratio");
+  if (Math.abs(dimensions.width / dimensions.height - 16 / 9) > 0.02) throw new Error("invalid_image_ratio");
 
   const expectedImageUri = `ipfs://${imageCid}`;
   const expectedDeliveryImageUri = `${LIGHTHOUSE_DELIVERY_GATEWAY}/${imageCid}`;
   const expectedLegacyImageUri = `${LIGHTHOUSE_LEGACY_PUBLIC_GATEWAY}/${imageCid}`;
+  const properties = isRecord(metadata.properties) ? metadata.properties : null;
   const propertyFile = properties && Array.isArray(properties.files) && properties.files.length === 1 && isRecord(properties.files[0])
     ? properties.files[0]
     : null;
@@ -301,7 +294,7 @@ async function validateArchive(
     imageCid,
     metadataPath,
     rootCids,
-    isDirectoryPackage,
+    isLegacyDirectoryPackage,
     deliveryGateway,
   };
 }
@@ -354,8 +347,8 @@ async function waitForGatewayAssets(
   imageBytes: Uint8Array,
   delays = [0, 750, 1_500, 3_000],
 ) {
-  // tokenURI/image fields point to these exact paid-gateway URLs. Verification
-  // succeeds only when those same URLs serve the expected bytes.
+  // Future tokenURI/image fields point to these exact paid-gateway URLs. Only clear
+  // the local recovery package after those same URLs serve the expected bytes.
   const metadataCandidates = [`${gateway}/${metadataPath}`];
   const imageCandidates = [`${gateway}/${imageCid}`];
   for (const delay of delays) {
@@ -395,6 +388,7 @@ function successPayload(
   assets: { metadataUrl: string; artworkUrl: string },
   alreadyStored: boolean,
   openSeaRefresh: "scheduled" | "queued" | "failed" | "not_configured",
+  availability: "verified" | "propagating" = "verified",
 ) {
   const tokenId = mint.tokenId.toString();
   return {
@@ -406,21 +400,38 @@ function successPayload(
     metadataUrl: assets.metadataUrl,
     artworkUrl: assets.artworkUrl,
     tokenId,
-    availability: "verified" as const,
+    availability,
     openSeaRefresh,
     openSeaUrl: `https://opensea.io/item/base/${contract}/${tokenId}`,
     collectionUrl: OPENSEA_COLLECTION_URL,
   };
 }
 
-function scheduleMarketplaceRefresh(
+function scheduleMarketplaceFinalization(
   contract: Address,
   mint: MintEvent,
+  archive: Awaited<ReturnType<typeof validateArchive>>,
 ) {
   after(async () => {
-    await queueOpenSeaRefresh(contract, mint.tokenId);
+    try {
+      const assets = await waitForGatewayAssets(
+        archive.deliveryGateway,
+        archive.metadataPath,
+        archive.imageCid,
+        archive.metadataBytes,
+        archive.imageBytes,
+        [1_500],
+      );
+      if (!assets) return;
+      await queueOpenSeaRefresh(contract, mint.tokenId);
+    } catch {
+      // The upload has already been accepted under the exact onchain CIDs.
+      // Gateway propagation and marketplace refresh are best-effort follow-up.
+    }
   });
 }
+
+type UploadFile = { bytes: Uint8Array; name: string; type: string };
 
 function lighthouseHashes(responseText: string): string[] {
   const records: unknown[] = [];
@@ -436,55 +447,29 @@ function lighthouseHashes(responseText: string): string[] {
   const hashes: string[] = [];
   const collect = (value: unknown) => {
     if (Array.isArray(value)) { for (const item of value) collect(item); return; }
-    if (typeof value === "string") {
-      try { CID.parse(value); hashes.push(value); } catch { /* Not a CID. */ }
-      return;
-    }
     if (!isRecord(value)) return;
-    for (const nested of Object.values(value)) collect(nested);
+    if (typeof value.Hash === "string") hashes.push(value.Hash);
+    if ("data" in value) collect(value.data);
   };
   for (const record of records) collect(record);
   return hashes;
 }
 
-function lighthouseIndexedCids(responseText: string): Set<string> {
-  try {
-    const parsed: unknown = JSON.parse(responseText);
-    if (!isRecord(parsed)) return new Set();
-    const payload = isRecord(parsed.data) ? parsed.data : parsed;
-    if (!Array.isArray(payload.fileList)) return new Set();
-    return new Set(
-      payload.fileList
-        .filter(isRecord)
-        .map((file) => typeof file.cid === "string" ? file.cid : "")
-        .filter(Boolean),
-    );
-  } catch {
-    return new Set();
-  }
-}
-
-async function hasIndexedUploads(apiKey: string, expectedCids: string[]) {
-  try {
-    const response = await fetch(LIGHTHOUSE_UPLOAD_INDEX_URL, {
-      headers: { authorization: `Bearer ${apiKey}`, accept: "application/json" },
-      cache: "no-store",
-      signal: AbortSignal.timeout(8_000),
-    });
-    const responseText = await readResponseWithLimit(response, 256_000);
-    if (!response.ok) return false;
-    const indexedCids = lighthouseIndexedCids(responseText);
-    return expectedCids.every((cid) => indexedCids.has(cid));
-  } catch {
-    return false;
-  }
-}
-
-async function uploadCar(apiKey: string, carBytes: Uint8Array, expectedRoot: string) {
+async function uploadFiles(apiKey: string, files: UploadFile[], expectedRoot: string, wrapWithDirectory: boolean) {
   const formData = new FormData();
-  const buffer = carBytes.buffer.slice(carBytes.byteOffset, carBytes.byteOffset + carBytes.byteLength) as ArrayBuffer;
-  formData.append("file", new Blob([buffer], { type: "application/vnd.ipld.car" }), "run.car");
-  const upstream = await fetch(LIGHTHOUSE_CAR_UPLOAD_URL, {
+  for (const file of files) {
+    const buffer = file.bytes.buffer.slice(file.bytes.byteOffset, file.bytes.byteOffset + file.bytes.byteLength) as ArrayBuffer;
+    formData.append("file", new Blob([buffer], { type: file.type }), file.name);
+  }
+
+  const params = new URLSearchParams({
+    "cid-version": "1",
+    "raw-leaves": "true",
+    chunker: "size-1048576",
+    pin: "true",
+    "wrap-with-directory": String(wrapWithDirectory),
+  });
+  const upstream = await fetch(`${LIGHTHOUSE_FILE_UPLOAD_URL}?${params.toString()}`, {
     method: "POST",
     headers: { authorization: `Bearer ${apiKey}` },
     body: formData,
@@ -502,50 +487,6 @@ async function uploadCar(apiKey: string, carBytes: Uint8Array, expectedRoot: str
     if (error instanceof Error && error.message === "lighthouse_cid_mismatch") throw error;
     throw new Error("invalid_lighthouse_response");
   }
-}
-
-async function waitForDurableArchive(
-  apiKey: string,
-  rootCid: string,
-  archive: Awaited<ReturnType<typeof validateArchive>>,
-) {
-  const indexedCids = archive.isDirectoryPackage ? [rootCid] : [rootCid, archive.imageCid];
-  for (const delay of [0, 1_000, 2_000, 4_000, 7_000]) {
-    if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
-    const [assets, indexed] = await Promise.all([
-      waitForGatewayAssets(
-        archive.deliveryGateway,
-        archive.metadataPath,
-        archive.imageCid,
-        archive.metadataBytes,
-        archive.imageBytes,
-        [0],
-      ),
-      hasIndexedUploads(apiKey, indexedCids),
-    ]);
-    if (assets && indexed) return assets;
-  }
-  return null;
-}
-
-async function verifyDurableArchiveOnce(
-  apiKey: string,
-  rootCid: string,
-  archive: Awaited<ReturnType<typeof validateArchive>>,
-) {
-  const indexedCids = archive.isDirectoryPackage ? [rootCid] : [rootCid, archive.imageCid];
-  const [assets, indexed] = await Promise.all([
-    waitForGatewayAssets(
-      archive.deliveryGateway,
-      archive.metadataPath,
-      archive.imageCid,
-      archive.metadataBytes,
-      archive.imageBytes,
-      [0],
-    ),
-    hasIndexedUploads(apiKey, indexedCids),
-  ]);
-  return assets && indexed ? assets : null;
 }
 
 export async function POST(request: Request) {
@@ -578,9 +519,7 @@ export async function POST(request: Request) {
   const validTokenUri = tokenUri === `ipfs://${rootCid}`
     || tokenUri === `${LIGHTHOUSE_LEGACY_PUBLIC_GATEWAY}/${rootCid}`
     || tokenUri === `${LIGHTHOUSE_DELIVERY_GATEWAY}/${rootCid}`
-    || tokenUri === `ipfs://${rootCid}/metadata.json`
-    || tokenUri === `${LIGHTHOUSE_LEGACY_PUBLIC_GATEWAY}/${rootCid}/metadata.json`
-    || tokenUri === `${LIGHTHOUSE_DELIVERY_GATEWAY}/${rootCid}/metadata.json`;
+    || tokenUri === `ipfs://${rootCid}/metadata.json`;
   if (!/^0x[0-9a-fA-F]{64}$/.test(txHash) || !/^b[a-z2-7]{40,100}$/.test(rootCid) || !validTokenUri) {
     return jsonError("invalid_mint_package", 400);
   }
@@ -603,19 +542,38 @@ export async function POST(request: Request) {
   try { archive = await validateArchive(carBytes, rootCid, mint, configuredSite); }
   catch { return jsonError("invalid_car_archive", 422); }
 
-  const existingAssets = await verifyDurableArchiveOnce(apiKey, rootCid, archive);
-  if (existingAssets) {
-    const refreshState = (process.env.OPENSEA_API_KEY ?? "").trim() ? "scheduled" as const : "not_configured" as const;
-    scheduleMarketplaceRefresh(contractValue, mint);
-    return NextResponse.json(successPayload(contractValue, mint, rootCid, tokenUri, existingAssets, true, refreshState), { headers: RESPONSE_HEADERS });
+  const isRetry = body.retry === true;
+  if (isRetry) {
+    const existingAssets = await waitForGatewayAssets(
+      archive.deliveryGateway,
+      archive.metadataPath,
+      archive.imageCid,
+      archive.metadataBytes,
+      archive.imageBytes,
+      [0],
+    );
+    if (existingAssets) {
+      const refreshState = (process.env.OPENSEA_API_KEY ?? "").trim() ? "scheduled" as const : "not_configured" as const;
+      scheduleMarketplaceFinalization(contractValue, mint, archive);
+      return NextResponse.json(successPayload(contractValue, mint, rootCid, tokenUri, existingAssets, true, refreshState), { headers: RESPONSE_HEADERS });
+    }
   }
 
-  if (!archive.isDirectoryPackage) return jsonError("unsupported_nft_pipeline", 409);
-
   try {
-    // Import the exact locally-built directory CAR once. This is Lighthouse's
-    // official CAR path and atomically preserves metadata.json + run.jpg.
-    await uploadCar(apiKey, carBytes, rootCid);
+    const imageFile = { bytes: archive.imageBytes, name: "run.jpg", type: "image/jpeg" };
+    const metadataFile = { bytes: archive.metadataBytes, name: "metadata.json", type: "application/json" };
+    if (archive.isLegacyDirectoryPackage) {
+      await uploadFiles(apiKey, [imageFile, metadataFile], rootCid, true);
+    } else {
+      // The token URI and image URI point to these exact raw file CIDs. Using
+      // Lighthouse's normal add endpoint stores the content itself; uploading
+      // a CAR here would only register a `carfile.car` record and leave these
+      // roots unavailable to gateways and marketplaces.
+      await Promise.all([
+        uploadFiles(apiKey, [imageFile], archive.imageCid, false),
+        uploadFiles(apiKey, [metadataFile], rootCid, false),
+      ]);
+    }
   } catch (error) {
     const reason = error instanceof Error ? error.message : "lighthouse_upload_failed";
     return jsonError(
@@ -624,22 +582,17 @@ export async function POST(request: Request) {
     );
   }
 
-  const deliveryAssets = await waitForDurableArchive(apiKey, rootCid, archive);
-  if (!deliveryAssets) return jsonError("lighthouse_verification_failed", 502);
-
-  // The response is successful only after the paid account index and paid
-  // gateway both expose the exact metadata and image bytes.
-  scheduleMarketplaceRefresh(contractValue, mint);
+  // Lighthouse returned the exact CIDs committed in the transaction. Gateway
+  // propagation can take longer than a serverless request and is not a failed
+  // mint or failed upload. Verify it and refresh OpenSea after responding.
+  scheduleMarketplaceFinalization(contractValue, mint, archive);
+  const deliveryAssets = {
+    metadataUrl: `${archive.deliveryGateway}/${archive.metadataPath}`,
+    artworkUrl: `${archive.deliveryGateway}/${archive.imageCid}`,
+  };
   const refreshState = (process.env.OPENSEA_API_KEY ?? "").trim() ? "scheduled" as const : "not_configured" as const;
   return NextResponse.json(
-    successPayload(contractValue, mint, rootCid, tokenUri, deliveryAssets, false, refreshState),
-    { headers: RESPONSE_HEADERS },
-  );
-}
-
-export async function GET() {
-  return NextResponse.json(
-    { pipelineVersion: NFT_PIPELINE_VERSION },
+    successPayload(contractValue, mint, rootCid, tokenUri, deliveryAssets, false, refreshState, "propagating"),
     { headers: RESPONSE_HEADERS },
   );
 }
