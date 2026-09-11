@@ -28,7 +28,7 @@ OPENSEA_API_KEY=...
 ## Notes
 - `submitScore(meters)` always emits an event, but only updates `bestMeters[address]` if the submitted meters is higher.
 - `mintRun(meters, driverId, tokenURI)` mints sequential tokenIds: 1,2,3...
-- The app computes flat metadata and artwork IPFS CIDs locally and keeps each CAR package in a browser recovery queue until `RunMinted` succeeds and the public Lighthouse gateway serves the exact bytes. The protected finalizer verifies the receipt and package before uploading `metadata.json` and `run.jpg` under those exact CIDs.
+- The app computes flat metadata and artwork IPFS CIDs locally and keeps each CAR package in a browser recovery queue. The protected finalizer verifies the receipt and package before uploading `metadata.json` and `run.jpg` under those exact CIDs.
 - New tokens use immutable, content-addressed URLs from the project's paid Lighthouse gateway for `tokenURI` and the primary image. NFT artwork is a focused 960x960 square so marketplace viewers do not add empty letterbox bands; metadata also retains the canonical `ipfs://<image CID>` in `properties.files`.
-- The mint UI returns as soon as Lighthouse accepts the exact CIDs. Gateway verification and marketplace refresh continue in the background; the local recovery copy is removed only after a byte-for-byte paid-gateway check succeeds.
+- The mint UI returns as soon as Lighthouse accepts the exact CIDs. Gateway verification and marketplace refresh continue in the background; the local recovery copy is retained for up to 30 days and removed only after both metadata and artwork are indexed under the paid Lighthouse account and the paid gateway serves their exact bytes.
 - Keep `LIGHTHOUSE_API_KEY` and the optional `OPENSEA_API_KEY` server-only. Never add a `NEXT_PUBLIC_` prefix to either key.

@@ -20,12 +20,14 @@ import {
 } from "@/lib/apiProtection";
 import { runNftAbi } from "@/lib/onchainAbi";
 import { LIGHTHOUSE_DELIVERY_GATEWAY, LIGHTHOUSE_LEGACY_PUBLIC_GATEWAY } from "@/lib/nftGateway";
+import { NFT_PIPELINE_VERSION } from "@/lib/nftPipeline";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 const LIGHTHOUSE_FILE_UPLOAD_URL = "https://upload.lighthouse.storage/api/v0/add";
+const LIGHTHOUSE_UPLOAD_INDEX_URL = "https://api.lighthouse.storage/api/user/files_uploaded?lastKey=null&fileType=all";
 const OPENSEA_API_URL = "https://api.opensea.io/api/v2";
 const OPENSEA_COLLECTION_URL = "https://opensea.io/collection/jesse-hill-climb";
 const MAX_BODY_BYTES = 1_200_000;
@@ -411,21 +413,27 @@ function successPayload(
 }
 
 function scheduleMarketplaceFinalization(
+  apiKey: string,
+  rootCid: string,
   contract: Address,
   mint: MintEvent,
   archive: Awaited<ReturnType<typeof validateArchive>>,
 ) {
   after(async () => {
     try {
-      const assets = await waitForGatewayAssets(
-        archive.deliveryGateway,
-        archive.metadataPath,
-        archive.imageCid,
-        archive.metadataBytes,
-        archive.imageBytes,
-        [1_500],
-      );
-      if (!assets) return;
+      const indexedCids = archive.isLegacyDirectoryPackage ? [rootCid] : [rootCid, archive.imageCid];
+      const [assets, indexed] = await Promise.all([
+        waitForGatewayAssets(
+          archive.deliveryGateway,
+          archive.metadataPath,
+          archive.imageCid,
+          archive.metadataBytes,
+          archive.imageBytes,
+          [1_500],
+        ),
+        hasIndexedUploads(apiKey, indexedCids),
+      ]);
+      if (!assets || !indexed) return;
       await queueOpenSeaRefresh(contract, mint.tokenId);
     } catch {
       // The upload has already been accepted under the exact onchain CIDs.
@@ -456,6 +464,39 @@ function lighthouseHashes(responseText: string): string[] {
   };
   for (const record of records) collect(record);
   return hashes;
+}
+
+function lighthouseIndexedCids(responseText: string): Set<string> {
+  try {
+    const parsed: unknown = JSON.parse(responseText);
+    if (!isRecord(parsed)) return new Set();
+    const payload = isRecord(parsed.data) ? parsed.data : parsed;
+    if (!Array.isArray(payload.fileList)) return new Set();
+    return new Set(
+      payload.fileList
+        .filter(isRecord)
+        .map((file) => typeof file.cid === "string" ? file.cid : "")
+        .filter(Boolean),
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+async function hasIndexedUploads(apiKey: string, expectedCids: string[]) {
+  try {
+    const response = await fetch(LIGHTHOUSE_UPLOAD_INDEX_URL, {
+      headers: { authorization: `Bearer ${apiKey}`, accept: "application/json" },
+      cache: "no-store",
+      signal: AbortSignal.timeout(8_000),
+    });
+    const responseText = await readResponseWithLimit(response, 256_000);
+    if (!response.ok) return false;
+    const indexedCids = lighthouseIndexedCids(responseText);
+    return expectedCids.every((cid) => indexedCids.has(cid));
+  } catch {
+    return false;
+  }
 }
 
 async function uploadFiles(apiKey: string, files: UploadFile[], expectedRoot: string, wrapWithDirectory: boolean) {
@@ -547,17 +588,21 @@ export async function POST(request: Request) {
 
   const isRetry = body.retry === true;
   if (isRetry) {
-    const existingAssets = await waitForGatewayAssets(
-      archive.deliveryGateway,
-      archive.metadataPath,
-      archive.imageCid,
-      archive.metadataBytes,
-      archive.imageBytes,
-      [0],
-    );
-    if (existingAssets) {
+    const indexedCids = archive.isLegacyDirectoryPackage ? [rootCid] : [rootCid, archive.imageCid];
+    const [existingAssets, indexed] = await Promise.all([
+      waitForGatewayAssets(
+        archive.deliveryGateway,
+        archive.metadataPath,
+        archive.imageCid,
+        archive.metadataBytes,
+        archive.imageBytes,
+        [0],
+      ),
+      hasIndexedUploads(apiKey, indexedCids),
+    ]);
+    if (existingAssets && indexed) {
       const refreshState = (process.env.OPENSEA_API_KEY ?? "").trim() ? "scheduled" as const : "not_configured" as const;
-      scheduleMarketplaceFinalization(contractValue, mint, archive);
+      scheduleMarketplaceFinalization(apiKey, rootCid, contractValue, mint, archive);
       return NextResponse.json(successPayload(contractValue, mint, rootCid, tokenUri, existingAssets, true, refreshState), { headers: RESPONSE_HEADERS });
     }
   }
@@ -588,7 +633,7 @@ export async function POST(request: Request) {
   // Lighthouse returned the exact CIDs committed in the transaction. Gateway
   // propagation can take longer than a serverless request and is not a failed
   // mint or failed upload. Verify it and refresh OpenSea after responding.
-  scheduleMarketplaceFinalization(contractValue, mint, archive);
+  scheduleMarketplaceFinalization(apiKey, rootCid, contractValue, mint, archive);
   const deliveryAssets = {
     metadataUrl: `${archive.deliveryGateway}/${archive.metadataPath}`,
     artworkUrl: `${archive.deliveryGateway}/${archive.imageCid}`,
@@ -596,6 +641,13 @@ export async function POST(request: Request) {
   const refreshState = (process.env.OPENSEA_API_KEY ?? "").trim() ? "scheduled" as const : "not_configured" as const;
   return NextResponse.json(
     successPayload(contractValue, mint, rootCid, tokenUri, deliveryAssets, false, refreshState, "propagating"),
+    { headers: RESPONSE_HEADERS },
+  );
+}
+
+export async function GET() {
+  return NextResponse.json(
+    { pipelineVersion: NFT_PIPELINE_VERSION },
     { headers: RESPONSE_HEADERS },
   );
 }

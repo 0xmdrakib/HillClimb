@@ -7,7 +7,7 @@ const DATABASE_NAME = "jesse-hill-climb";
 const DATABASE_VERSION = 1;
 const STORE_NAME = "pending-nft";
 const RECORD_KEY = "latest";
-const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
+const MAX_AGE_MS = 30 * 24 * 60 * 60 * 1_000;
 const MAX_PENDING_MINTS = 12;
 
 export type PendingRunMint = {

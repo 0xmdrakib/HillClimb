@@ -26,6 +26,7 @@ import {
 import { audioManager } from "@/lib/audio";
 import { buildRunNftPackage, type RunNftPackage } from "@/lib/nftPackage";
 import { loadPendingRunMints, removePendingRunMint, savePendingRunMint } from "@/lib/pendingMint";
+import { NFT_PIPELINE_VERSION } from "@/lib/nftPipeline";
 
 const DEFAULT_INJECTED_WALLET = "any" as const;
 const LAST_WALLET_KEY = "jhc_last_wallet_id_v1";
@@ -77,11 +78,26 @@ function humanizeTxErr(err: any) {
   if (msg.includes("no wallet provider") || msg.includes("no compatible wallet")) return "No compatible wallet found";
   if (msg.includes("nft minting is not configured")) return "NFT minting is not configured";
   if (msg.includes("run snapshot is unavailable")) return "Run snapshot is unavailable";
+  if (msg.includes("nft_pipeline_outdated")) return "The NFT system was updated — refresh once before minting";
+  if (msg.includes("nft_pipeline_unavailable")) return "NFT service is temporarily unavailable";
   if (msg.includes("nft_storage_not_configured")) return "NFT storage is not configured";
   if (msg.includes("rate_limited")) return "Too many attempts — please try again shortly";
   if (msg.includes("lighthouse")) return "NFT storage is temporarily unavailable — retry is safe";
   if (msg.includes("transaction_not_confirmed") || msg.includes("timed out") || msg.includes("timeout")) return "Transaction confirmation is still pending — check BaseScan before retrying";
   return "Transaction failed";
+}
+
+async function assertCurrentNftPipeline() {
+  let response: Response;
+  try {
+    response = await fetch("/api/nft/finalize", { cache: "no-store" });
+  } catch {
+    throw new Error("nft_pipeline_unavailable");
+  }
+  const result = await response.json().catch(() => null);
+  if (!response.ok || result?.pipelineVersion !== NFT_PIPELINE_VERSION) {
+    throw new Error("nft_pipeline_outdated");
+  }
 }
 
 const BACK_BUTTON_THEMES: Record<MapId, { background: string; borderColor: string; shadow: string; color: string }> = {
@@ -570,8 +586,8 @@ export default function Page() {
       return true;
     }
 
-    // The exact CIDs were accepted by Lighthouse, so the mint is successful.
-    // Keep the local CAR until a gateway byte-check succeeds, and retry quietly.
+    // The onchain mint succeeded, but keep the local CAR until Lighthouse has
+    // indexed both files and the paid gateway serves their exact bytes.
     if (pendingMintRef.current?.txHash === pending.txHash) pendingMintRef.current = null;
     if (options.scheduleRetry !== false) void silentlyVerifyMint(pending);
     return false;
@@ -592,7 +608,8 @@ export default function Page() {
 
       if (!gameOverShot) throw new Error("Run snapshot is unavailable");
       setMintTx(null);
-      setMintStage("Opening wallet…");
+      setMintStage("Preparing NFT…");
+      await assertCurrentNftPipeline();
       const nftPackage = await buildRunNftPackage({
         snapshotDataUrl: gameOverShot,
         meters: gameOverMeters || state.distanceM,
