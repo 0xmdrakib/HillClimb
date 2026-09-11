@@ -25,6 +25,7 @@ import {
 } from "@/lib/onchain";
 import { audioManager } from "@/lib/audio";
 import { buildRunNftPackage, type RunNftPackage } from "@/lib/nftPackage";
+import { LIGHTHOUSE_DELIVERY_GATEWAY } from "@/lib/nftGateway";
 import { loadPendingRunMints, removePendingRunMint, savePendingRunMint } from "@/lib/pendingMint";
 
 const DEFAULT_INJECTED_WALLET = "any" as const;
@@ -746,11 +747,11 @@ export default function Page() {
     void (async () => {
       let firstRequest = true;
       for (let pass = 0; pass < 2; pass += 1) {
-        // Legacy HTTP/directory tokens are tied to older immutable URLs. Do not
-        // automatically recover them or spend a new mint's storage quota on them.
-        // Leave those records intact; only resume the current flat IPFS format.
+        // Resume only mints created by the current paid-delivery flow. Older
+        // immutable tokens stay archived and never trigger automatic recovery.
         const pendings = (await loadPendingRunMints()).filter(
-          (pending) => pending.package.tokenUri === `ipfs://${pending.package.rootCid}`,
+          (pending) => pending.version === 2
+            && pending.package.tokenUri === `${LIGHTHOUSE_DELIVERY_GATEWAY}/${pending.package.rootCid}`,
         );
         if (!pendings.length) return;
         // Previous runs may finish in the background. They do not become the

@@ -3,6 +3,7 @@ import {
   createFileEncoderStream,
   type Block,
 } from "ipfs-car";
+import { LIGHTHOUSE_DELIVERY_GATEWAY } from "@/lib/nftGateway";
 
 const IMAGE_WIDTH = 960;
 const IMAGE_HEIGHT = 540;
@@ -106,9 +107,9 @@ export async function buildRunNftPackage(input: RunNftPackageInput): Promise<Run
   const metadata = {
     name: `Jesse Hill Climb — ${meters}m Run`,
     description: "A hill-climb run captured at the finish on Base.",
-    // Keep immutable NFT data gateway-independent. Marketplaces resolve the CID
-    // through their own IPFS gateway while Lighthouse remains the pinning layer.
-    image: `ipfs://${imageCid}`,
+    // Deliver the exact pinned bytes through the project's paid Lighthouse host.
+    // Keep the content-addressed IPFS reference in properties.files as provenance.
+    image: `${LIGHTHOUSE_DELIVERY_GATEWAY}/${imageCid}`,
     external_url: input.siteUrl,
     attributes: [
       { trait_type: "Distance", value: meters, display_type: "number" },
@@ -141,6 +142,6 @@ export async function buildRunNftPackage(input: RunNftPackageInput): Promise<Run
     carBytes: car.byteLength,
     imageBytes: imageBlob.size,
     rootCid: metadataCid,
-    tokenUri: `ipfs://${metadataCid}`,
+    tokenUri: `${LIGHTHOUSE_DELIVERY_GATEWAY}/${metadataCid}`,
   };
 }

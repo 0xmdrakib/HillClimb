@@ -130,12 +130,15 @@ class TransactionRevertedError extends Error {
 
 const TX_A = `0x${"a".repeat(64)}`;
 const TX_B = `0x${"b".repeat(64)}`;
+const TX_C = `0x${"c".repeat(64)}`;
+const TX_D = `0x${"d".repeat(64)}`;
+const LIGHTHOUSE_DELIVERY_GATEWAY = "https://protective-walrus-h5noy.lighthouseweb3.xyz/ipfs";
 
 function nftPackage(label = "current") {
   const rootCid = `bafy-${label}`;
   return {
     rootCid,
-    tokenUri: `ipfs://${rootCid}`,
+    tokenUri: `${LIGHTHOUSE_DELIVERY_GATEWAY}/${rootCid}`,
     carBase64: `base64-${label}`,
   };
 }
@@ -144,14 +147,18 @@ function legacyNftPackage(label, tokenUri) {
   return { ...nftPackage(label), tokenUri };
 }
 
+function persistedPending(nft, txHash, version = 2) {
+  return { package: nft, txHash, version, savedAt: 1_750_000_000_000 };
+}
+
 function successfulResponse(overrides = {}) {
   return {
     ok: true,
     status: 200,
     json: async () => ({
       ok: true,
-      metadataUrl: "https://gateway.example/ipfs/bafy/metadata.json",
-      gatewayUrl: "https://gateway.example/ipfs/bafy/image.webp",
+      metadataUrl: `${LIGHTHOUSE_DELIVERY_GATEWAY}/bafy-metadata`,
+      gatewayUrl: `${LIGHTHOUSE_DELIVERY_GATEWAY}/bafy-image`,
       openSeaUrl: "https://opensea.io/assets/base/contract/1",
       ...overrides,
     }),
@@ -217,6 +224,7 @@ function createHarness(overrides = {}) {
   const defaultBindings = {
     AbortSignal,
     HEADS: { jesse: { label: "Jesse" }, brian: { label: "Brian" } },
+    LIGHTHOUSE_DELIVERY_GATEWAY,
     MAPS: { countryside: { name: "Countryside" } },
     MintStorageError,
     TransactionRevertedError,
@@ -292,7 +300,7 @@ function createHarness(overrides = {}) {
 }
 
 test("a persisted old run finishes silently and never hijacks the current run", async () => {
-  const oldPending = { package: nftPackage("old"), txHash: TX_A };
+  const oldPending = persistedPending(nftPackage("old"), TX_A);
   const newPending = { package: nftPackage("new"), txHash: TX_B };
   const responseGate = deferred();
   let loadPass = 0;
@@ -326,22 +334,34 @@ test("a persisted old run finishes silently and never hijacks the current run", 
   cleanup();
 });
 
-test("startup leaves legacy HTTP and metadata.json records untouched", async () => {
+test("startup leaves every version-1 HTTP/IPFS record untouched", async () => {
   const legacyRecords = [
-    {
-      package: legacyNftPackage(
-        "legacy-http",
-        "https://gateway.example/ipfs/bafy-legacy-http/metadata.json",
+    persistedPending(
+      nftPackage("legacy-paid-exact"),
+      TX_A,
+      1,
+    ),
+    persistedPending(
+      legacyNftPackage(
+        "legacy-public",
+        "https://gateway.lighthouse.storage/ipfs/bafy-legacy-public",
       ),
-      txHash: TX_A,
-    },
-    {
-      package: legacyNftPackage(
+      TX_B,
+      1,
+    ),
+    persistedPending(
+      legacyNftPackage("legacy-flat-ipfs", "ipfs://bafy-legacy-flat-ipfs"),
+      TX_C,
+      1,
+    ),
+    persistedPending(
+      legacyNftPackage(
         "legacy-directory",
         "ipfs://bafy-legacy-directory/metadata.json",
       ),
-      txHash: TX_B,
-    },
+      TX_D,
+      1,
+    ),
   ];
   let loadPass = 0;
   const harness = createHarness({
@@ -363,13 +383,13 @@ test("startup leaves legacy HTTP and metadata.json records untouched", async () 
   assert.equal(harness.calls.remove.length, 0);
   assert.equal(harness.calls.ensureWallet, 0);
   assert.equal(harness.calls.mint, 0);
-  assert.deepEqual([...harness.persisted.keys()].sort(), [TX_A, TX_B].sort());
+  assert.deepEqual([...harness.persisted.keys()].sort(), [TX_A, TX_B, TX_C, TX_D].sort());
   assert.equal(harness.refs.pending.current, null);
   cleanup();
 });
 
-test("startup finalizes a canonical flat-CAR record when no fresh attempt is active", async () => {
-  const canonical = { package: nftPackage("canonical"), txHash: TX_A };
+test("startup finalizes a version-2 paid-gateway record when no fresh attempt is active", async () => {
+  const canonical = persistedPending(nftPackage("paid"), TX_A);
   let loadPass = 0;
   const harness = createHarness({
     bindings: {
@@ -394,7 +414,7 @@ test("startup finalizes a canonical flat-CAR record when no fresh attempt is act
 });
 
 test("a fresh foreground mint blocks startup recovery until the attempt is released", async () => {
-  const canonical = { package: nftPackage("queued"), txHash: TX_A };
+  const canonical = persistedPending(nftPackage("queued"), TX_A);
   const sleepers = [];
   let loadPass = 0;
   const harness = createHarness({

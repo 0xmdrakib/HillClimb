@@ -1,7 +1,7 @@
 "use client";
 
 import type { RunNftPackage } from "@/lib/nftPackage";
-import { LIGHTHOUSE_DELIVERY_GATEWAY, LIGHTHOUSE_LEGACY_PUBLIC_GATEWAY } from "@/lib/nftGateway";
+import { LIGHTHOUSE_DELIVERY_GATEWAY } from "@/lib/nftGateway";
 
 const DATABASE_NAME = "jesse-hill-climb";
 const DATABASE_VERSION = 1;
@@ -10,7 +10,7 @@ const RECORD_KEY = "latest";
 const MAX_PENDING_MINTS = 12;
 
 export type PendingRunMint = {
-  version: 1;
+  version: 1 | 2;
   savedAt: number;
   txHash: string;
   package: RunNftPackage;
@@ -49,10 +49,11 @@ function isValidPending(value: unknown): value is PendingRunMint {
   const tokenUri = nftPackage?.tokenUri ?? "";
   const validTokenUri = tokenUri === `ipfs://${nftPackage?.rootCid}`
     || tokenUri === `ipfs://${nftPackage?.rootCid}/metadata.json`
-    || tokenUri === `${LIGHTHOUSE_LEGACY_PUBLIC_GATEWAY}/${nftPackage?.rootCid}`
-    || tokenUri === `${LIGHTHOUSE_DELIVERY_GATEWAY}/${nftPackage?.rootCid}`;
+    || tokenUri === `${LIGHTHOUSE_DELIVERY_GATEWAY}/${nftPackage?.rootCid}`
+    // Preserve old records without requesting their obsolete delivery URLs.
+    || (pending?.version === 1 && tokenUri.startsWith("https://") && tokenUri.endsWith(`/${nftPackage?.rootCid}`));
   return (
-    pending?.version === 1 &&
+    (pending?.version === 1 || pending?.version === 2) &&
     Number.isFinite(pending.savedAt) &&
     Date.now() - pending.savedAt >= 0 &&
     /^0x[0-9a-fA-F]{64}$/.test(pending.txHash) &&
@@ -98,7 +99,7 @@ async function updatePendingRecords(update: (records: PendingRunMint[]) => Pendi
 }
 
 export async function savePendingRunMint(pending: Omit<PendingRunMint, "version" | "savedAt">): Promise<void> {
-  const record: PendingRunMint = { ...pending, version: 1, savedAt: Date.now() };
+  const record: PendingRunMint = { ...pending, version: 2, savedAt: Date.now() };
   await updatePendingRecords((records) => [
     ...records.filter((item) => item.txHash.toLowerCase() !== record.txHash.toLowerCase()),
     record,

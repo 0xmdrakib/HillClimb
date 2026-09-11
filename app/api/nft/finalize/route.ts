@@ -19,7 +19,7 @@ import {
   RequestBodyTooLargeError,
 } from "@/lib/apiProtection";
 import { runNftAbi } from "@/lib/onchainAbi";
-import { LIGHTHOUSE_DELIVERY_GATEWAY, LIGHTHOUSE_LEGACY_PUBLIC_GATEWAY } from "@/lib/nftGateway";
+import { LIGHTHOUSE_DELIVERY_GATEWAY } from "@/lib/nftGateway";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -193,11 +193,8 @@ async function validateArchive(
   const reader = await CarReader.fromBytes(carBytes);
   const roots = await reader.getRoots();
   const rootCids = roots.map((root) => root.toString());
-  const deliveryGateway = mint.tokenURI === `${LIGHTHOUSE_LEGACY_PUBLIC_GATEWAY}/${claimedRoot}`
-    ? LIGHTHOUSE_LEGACY_PUBLIC_GATEWAY
-    : LIGHTHOUSE_DELIVERY_GATEWAY;
+  const deliveryGateway = LIGHTHOUSE_DELIVERY_GATEWAY;
   const isFlatPackage = mint.tokenURI === `ipfs://${claimedRoot}`
-    || mint.tokenURI === `${LIGHTHOUSE_LEGACY_PUBLIC_GATEWAY}/${claimedRoot}`
     || mint.tokenURI === `${LIGHTHOUSE_DELIVERY_GATEWAY}/${claimedRoot}`;
   const isLegacyDirectoryPackage = mint.tokenURI === `ipfs://${claimedRoot}/metadata.json`;
   if (
@@ -258,13 +255,10 @@ async function validateArchive(
   const imageUri = typeof metadata.image === "string" ? metadata.image : "";
   const ipfsImagePrefix = "ipfs://";
   const deliveryImagePrefix = `${LIGHTHOUSE_DELIVERY_GATEWAY}/`;
-  const legacyImagePrefix = `${LIGHTHOUSE_LEGACY_PUBLIC_GATEWAY}/`;
   const imageCid = imageUri.startsWith(ipfsImagePrefix)
     ? imageUri.slice(ipfsImagePrefix.length)
     : imageUri.startsWith(deliveryImagePrefix)
       ? imageUri.slice(deliveryImagePrefix.length)
-      : imageUri.startsWith(legacyImagePrefix)
-        ? imageUri.slice(legacyImagePrefix.length)
       : "";
   if (!imageCid || imageCid.includes("/")) throw new Error("invalid_metadata_schema");
   try { CID.parse(imageCid); } catch { throw new Error("invalid_metadata_schema"); }
@@ -283,7 +277,6 @@ async function validateArchive(
 
   const expectedImageUri = `ipfs://${imageCid}`;
   const expectedDeliveryImageUri = `${LIGHTHOUSE_DELIVERY_GATEWAY}/${imageCid}`;
-  const expectedLegacyImageUri = `${LIGHTHOUSE_LEGACY_PUBLIC_GATEWAY}/${imageCid}`;
   const properties = isRecord(metadata.properties) ? metadata.properties : null;
   const propertyFile = properties && Array.isArray(properties.files) && properties.files.length === 1 && isRecord(properties.files[0])
     ? properties.files[0]
@@ -291,7 +284,7 @@ async function validateArchive(
   const expectedDriver = Number(mint.driverId) === 0 ? "Jesse" : Number(mint.driverId) === 1 ? "Brian" : null;
   if (
     typeof metadata.name !== "string" || !metadata.name.startsWith("Jesse Hill Climb — ") ||
-    ![expectedImageUri, expectedDeliveryImageUri, expectedLegacyImageUri].includes(String(metadata.image)) ||
+    ![expectedImageUri, expectedDeliveryImageUri].includes(String(metadata.image)) ||
     propertyFile?.uri !== expectedImageUri ||
     propertyFile?.type !== "image/jpeg" ||
     metadata.external_url !== expectedSiteUrl ||
@@ -313,7 +306,6 @@ async function validateArchive(
     rootCids,
     isLegacyDirectoryPackage,
     deliveryGateway,
-    allowsPublicGateway: mint.tokenURI === `ipfs://${claimedRoot}`,
   };
 }
 
@@ -373,26 +365,19 @@ async function waitForGatewayAssets(
   imageCid: string,
   metadataBytes: Uint8Array,
   imageBytes: Uint8Array,
-  allowPublicGateway: boolean,
   delays = [0, 750, 1_500, 3_000],
   deadlineAt = Date.now() + 15_000,
 ) {
-  // Canonical ipfs:// tokens must be retrievable from a public IPFS gateway,
-  // which is the same resolution model marketplaces use. Legacy HTTP tokens
-  // remain tied to their exact immutable paid-gateway URL.
-  const gateways = allowPublicGateway ? [LIGHTHOUSE_LEGACY_PUBLIC_GATEWAY] : [gateway];
+  // The paid host is the only delivery authority. Verify both exact files here;
+  // no alternate host may turn a missing or incorrect paid asset into success.
   for (const delay of delays) {
     if (Date.now() + delay + 300 >= deadlineAt) return null;
     if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
-    const matches = await Promise.all(gateways.map(async (candidate) => {
-      const [metadataUrl, artworkUrl] = await Promise.all([
-        firstMatchingUrl([`${candidate}/${metadataPath}`], metadataBytes, "metadata", deadlineAt),
-        firstMatchingUrl([`${candidate}/${imageCid}`], imageBytes, "image", deadlineAt),
-      ]);
-      return metadataUrl && artworkUrl ? { metadataUrl, artworkUrl } : null;
-    }));
-    const match = matches.find((assets): assets is { metadataUrl: string; artworkUrl: string } => Boolean(assets));
-    if (match) return match;
+    const [metadataUrl, artworkUrl] = await Promise.all([
+      firstMatchingUrl([`${gateway}/${metadataPath}`], metadataBytes, "metadata", deadlineAt),
+      firstMatchingUrl([`${gateway}/${imageCid}`], imageBytes, "image", deadlineAt),
+    ]);
+    if (metadataUrl && artworkUrl) return { metadataUrl, artworkUrl };
   }
   return null;
 }
@@ -546,7 +531,6 @@ export async function POST(request: Request) {
   const rootCid = String(body.rootCid ?? "");
   const tokenUri = String(body.tokenUri ?? "");
   const validTokenUri = tokenUri === `ipfs://${rootCid}`
-    || tokenUri === `${LIGHTHOUSE_LEGACY_PUBLIC_GATEWAY}/${rootCid}`
     || tokenUri === `${LIGHTHOUSE_DELIVERY_GATEWAY}/${rootCid}`
     || tokenUri === `ipfs://${rootCid}/metadata.json`;
   if (!/^0x[0-9a-fA-F]{64}$/.test(txHash) || !/^b[a-z2-7]{40,100}$/.test(rootCid) || !validTokenUri) {
@@ -592,7 +576,6 @@ export async function POST(request: Request) {
     archive.imageCid,
     archive.metadataBytes,
     archive.imageBytes,
-    archive.allowsPublicGateway,
     [0],
     deadlineAt,
   );
@@ -634,7 +617,6 @@ export async function POST(request: Request) {
       archive.imageCid,
       archive.metadataBytes,
       archive.imageBytes,
-      archive.allowsPublicGateway,
       [0, 500, 1_000, 2_000],
       deadlineAt,
     );

@@ -9,10 +9,7 @@ function normalizedHttpsGateway(value: string | undefined): string {
   return DEFAULT_LIGHTHOUSE_DELIVERY_GATEWAY;
 }
 
-/** Public, non-secret paid gateway used for retrieval checks and user links. */
+/** The project's paid gateway is the sole NFT delivery and verification host. */
 export const LIGHTHOUSE_DELIVERY_GATEWAY = normalizedHttpsGateway(
   process.env.NEXT_PUBLIC_LIGHTHOUSE_GATEWAY_URL,
 );
-
-/** Accepted only for recovery of tokens minted by the previous implementation. */
-export const LIGHTHOUSE_LEGACY_PUBLIC_GATEWAY = "https://gateway.lighthouse.storage/ipfs";

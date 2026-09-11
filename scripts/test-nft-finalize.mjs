@@ -88,7 +88,7 @@ async function buildFlatPackage({
   terrain,
   meters = 321,
   driverId = 0,
-  tokenStyle = "canonical",
+  tokenStyle = "paid",
   metadataTerrain = terrain,
   seed = 0,
 }) {
@@ -141,7 +141,7 @@ async function buildFlatPackage({
 function createHarness() {
   const state = {
     afterTasks: [],
-    gatewayMode: { paid: "unavailable", public: "exact" },
+    gatewayMode: { paid: "exact", public: "unavailable" },
     gatewayRequests: [],
     mismatchNextUpload: false,
     receipts: new Map(),
@@ -307,7 +307,7 @@ function createHarness() {
 
   function reset() {
     state.afterTasks.length = 0;
-    state.gatewayMode = { paid: "unavailable", public: "exact" };
+    state.gatewayMode = { paid: "exact", public: "unavailable" };
     state.gatewayRequests.length = 0;
     state.mismatchNextUpload = false;
     state.receipts.clear();
@@ -365,7 +365,7 @@ test("NFT finalizer route hermetic regression suite", async (t) => {
   const maps = ["Countryside", "Desert", "Arctic", "Moon"];
 
   for (const [index, terrain] of maps.entries()) {
-    await t.test(`valid canonical flat package: ${terrain}`, async () => {
+    await t.test(`valid paid-gateway flat package: ${terrain}`, async () => {
       harness.reset();
       const nftPackage = await buildFlatPackage({ terrain, meters: 300 + index, seed: index + 1 });
       const txHash = transactionHash(100 + index);
@@ -376,15 +376,16 @@ test("NFT finalizer route hermetic regression suite", async (t) => {
       assert.equal(response.status, 200);
       assert.equal(body.ok, true);
       assert.equal(body.rootCid, nftPackage.rootCid);
-      assert.equal(body.tokenUri, `ipfs://${nftPackage.rootCid}`);
-      assert.equal(body.metadataUrl, `${PUBLIC_GATEWAY}/${nftPackage.rootCid}`);
-      assert.equal(body.artworkUrl, `${PUBLIC_GATEWAY}/${nftPackage.imageCid}`);
+      assert.equal(body.tokenUri, `${PAID_GATEWAY}/${nftPackage.rootCid}`);
+      assert.equal(body.metadataUrl, `${PAID_GATEWAY}/${nftPackage.rootCid}`);
+      assert.equal(body.artworkUrl, `${PAID_GATEWAY}/${nftPackage.imageCid}`);
       assert.deepEqual(harness.state.uploads.map((upload) => upload.name), ["run.jpg", "metadata.json"]);
       assert.deepEqual(harness.state.uploads.map((upload) => upload.cid), [nftPackage.imageCid, nftPackage.rootCid]);
       assert.deepEqual(harness.state.uploads[0].bytes, nftPackage.imageBytes);
       assert.deepEqual(harness.state.uploads[1].bytes, nftPackage.metadataBytes);
       assert.ok(harness.state.gatewayRequests.length > 0);
-      assert.ok(harness.state.gatewayRequests.every((url) => url.startsWith(`${PUBLIC_GATEWAY}/`)));
+      assert.ok(harness.state.gatewayRequests.every((url) => url.startsWith(`${PAID_GATEWAY}/`)));
+      assert.equal(harness.state.gatewayRequests.some((url) => url.startsWith(`${PUBLIC_GATEWAY}/`)), false);
     });
   }
 
@@ -464,24 +465,26 @@ test("NFT finalizer route hermetic regression suite", async (t) => {
   });
 
   for (const mode of ["wrong", "unavailable"]) {
-    await t.test(`${mode} gateway bytes retain pending state`, async () => {
+    await t.test(`${mode} paid-gateway bytes retain pending state`, async () => {
       harness.reset();
       const nftPackage = await buildFlatPackage({ terrain: "Countryside", seed: mode === "wrong" ? 15 : 16 });
       const txHash = transactionHash(mode === "wrong" ? 205 : 206);
       harness.state.receipts.set(txHash, harness.receiptFor(nftPackage, mode === "wrong" ? 14n : 15n));
-      harness.state.gatewayMode.public = mode;
+      harness.state.gatewayMode = { paid: mode, public: "exact" };
 
       const { body, response } = await harness.invoke(nftPackage, txHash);
 
       assert.equal(response.status, 202);
       assert.deepEqual(body, { ok: false, pending: true, error: "nft_storage_pending" });
       assert.deepEqual(harness.state.uploads.map((upload) => upload.name), ["run.jpg", "metadata.json"]);
+      assert.ok(harness.state.gatewayRequests.every((url) => url.startsWith(`${PAID_GATEWAY}/`)));
+      assert.equal(harness.state.gatewayRequests.some((url) => url.startsWith(`${PUBLIC_GATEWAY}/`)), false);
     });
   }
 
-  await t.test("legacy paid URL cannot pass using public gateway bytes", async () => {
+  await t.test("compatible ipfs input cannot pass using public gateway bytes", async () => {
     harness.reset();
-    const nftPackage = await buildFlatPackage({ terrain: "Desert", tokenStyle: "paid", seed: 17 });
+    const nftPackage = await buildFlatPackage({ terrain: "Desert", tokenStyle: "canonical", seed: 17 });
     const txHash = transactionHash(207);
     harness.state.receipts.set(txHash, harness.receiptFor(nftPackage, 16n));
     harness.state.gatewayMode = { paid: "unavailable", public: "exact" };

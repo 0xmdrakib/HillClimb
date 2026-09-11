@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "test:nft": "node --test scripts/test-mint-flow.mjs scripts/test-nft-finalize.mjs",
+    "test:nft": "node --test scripts/test-mint-flow.mjs scripts/test-nft-finalize.mjs scripts/test-nft-package.mjs",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix"
   },
