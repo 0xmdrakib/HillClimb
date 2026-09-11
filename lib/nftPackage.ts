@@ -5,9 +5,11 @@ import {
 } from "ipfs-car";
 import { LIGHTHOUSE_DELIVERY_GATEWAY } from "@/lib/nftGateway";
 
-const IMAGE_WIDTH = 960;
-const IMAGE_HEIGHT = 540;
+const IMAGE_SIZE = 960;
 const JPEG_QUALITY = 0.9;
+// The car sits toward the left of the gameplay frame. Keep it there while
+// cropping the landscape snapshot into the square artwork marketplaces use.
+const LANDSCAPE_CROP_OFFSET = 0.14;
 
 export type RunNftPackage = {
   carBase64: string;
@@ -49,18 +51,30 @@ async function compressSnapshot(dataUrl: string): Promise<Blob> {
 
   const source = await fetch(dataUrl).then((response) => response.blob());
   const image = await imageFromBlob(source);
-  const scale = Math.min(1, IMAGE_WIDTH / image.naturalWidth, IMAGE_HEIGHT / image.naturalHeight);
-  const width = Math.max(1, Math.round(image.naturalWidth * scale));
-  const height = Math.max(1, Math.round(image.naturalHeight * scale));
+  const sourceSize = Math.max(1, Math.min(image.naturalWidth, image.naturalHeight));
+  const excessWidth = Math.max(0, image.naturalWidth - sourceSize);
+  const excessHeight = Math.max(0, image.naturalHeight - sourceSize);
+  const sourceX = Math.round(excessWidth * LANDSCAPE_CROP_OFFSET);
+  const sourceY = Math.round(excessHeight / 2);
   const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
+  canvas.width = IMAGE_SIZE;
+  canvas.height = IMAGE_SIZE;
 
   const context = canvas.getContext("2d", { alpha: false });
   if (!context) throw new Error("Could not prepare the run image");
   context.imageSmoothingEnabled = true;
   context.imageSmoothingQuality = "high";
-  context.drawImage(image, 0, 0, width, height);
+  context.drawImage(
+    image,
+    sourceX,
+    sourceY,
+    sourceSize,
+    sourceSize,
+    0,
+    0,
+    IMAGE_SIZE,
+    IMAGE_SIZE,
+  );
 
   const jpeg = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", JPEG_QUALITY));
   if (!jpeg) throw new Error("Could not compress the run image");
@@ -123,6 +137,7 @@ export async function buildRunNftPackage(input: RunNftPackageInput): Promise<Run
     ],
     properties: {
       category: "image",
+      artwork_format: "square-v1",
       files: [{ uri: `ipfs://${imageCid}`, type: "image/jpeg" }],
     },
   };

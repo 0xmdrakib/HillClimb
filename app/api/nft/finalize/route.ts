@@ -259,15 +259,18 @@ async function validateArchive(
   if (imageEntry.cid.toString() !== imageCid) throw new Error("image_cid_mismatch");
   const imageBytes = await readEntryBytes(imageEntry, MAX_IMAGE_BYTES);
   const dimensions = jpegDimensions(imageBytes);
-  if (!dimensions || dimensions.width < 480 || dimensions.height < 270 || dimensions.width > 960 || dimensions.height > 540) {
+  const properties = isRecord(metadata.properties) ? metadata.properties : null;
+  const isSquareArtwork = properties?.artwork_format === "square-v1";
+  const maxHeight = isSquareArtwork ? 960 : 540;
+  if (!dimensions || dimensions.width < 480 || dimensions.height < 270 || dimensions.width > 960 || dimensions.height > maxHeight) {
     throw new Error("invalid_image");
   }
-  if (Math.abs(dimensions.width / dimensions.height - 16 / 9) > 0.02) throw new Error("invalid_image_ratio");
+  const expectedRatio = isSquareArtwork ? 1 : 16 / 9;
+  if (Math.abs(dimensions.width / dimensions.height - expectedRatio) > 0.02) throw new Error("invalid_image_ratio");
 
   const expectedImageUri = `ipfs://${imageCid}`;
   const expectedDeliveryImageUri = `${LIGHTHOUSE_DELIVERY_GATEWAY}/${imageCid}`;
   const expectedLegacyImageUri = `${LIGHTHOUSE_LEGACY_PUBLIC_GATEWAY}/${imageCid}`;
-  const properties = isRecord(metadata.properties) ? metadata.properties : null;
   const propertyFile = properties && Array.isArray(properties.files) && properties.files.length === 1 && isRecord(properties.files[0])
     ? properties.files[0]
     : null;
