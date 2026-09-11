@@ -1,6 +1,7 @@
 "use client";
 
 import type { RunNftPackage } from "@/lib/nftPackage";
+import { LIGHTHOUSE_DELIVERY_GATEWAY, LIGHTHOUSE_LEGACY_PUBLIC_GATEWAY } from "@/lib/nftGateway";
 
 const DATABASE_NAME = "jesse-hill-climb";
 const DATABASE_VERSION = 1;
@@ -8,7 +9,6 @@ const STORE_NAME = "pending-nft";
 const RECORD_KEY = "latest";
 const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
 const MAX_PENDING_MINTS = 12;
-const LIGHTHOUSE_PUBLIC_GATEWAY = "https://gateway.lighthouse.storage/ipfs";
 
 export type PendingRunMint = {
   version: 1;
@@ -50,7 +50,8 @@ function isValidPending(value: unknown): value is PendingRunMint {
   const tokenUri = nftPackage?.tokenUri ?? "";
   const validTokenUri = tokenUri === `ipfs://${nftPackage?.rootCid}`
     || tokenUri === `ipfs://${nftPackage?.rootCid}/metadata.json`
-    || tokenUri === `${LIGHTHOUSE_PUBLIC_GATEWAY}/${nftPackage?.rootCid}`;
+    || tokenUri === `${LIGHTHOUSE_LEGACY_PUBLIC_GATEWAY}/${nftPackage?.rootCid}`
+    || tokenUri === `${LIGHTHOUSE_DELIVERY_GATEWAY}/${nftPackage?.rootCid}`;
   return (
     pending?.version === 1 &&
     Number.isFinite(pending.savedAt) &&

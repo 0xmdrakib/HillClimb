@@ -19,13 +19,13 @@ import {
   RequestBodyTooLargeError,
 } from "@/lib/apiProtection";
 import { runNftAbi } from "@/lib/onchainAbi";
+import { LIGHTHOUSE_DELIVERY_GATEWAY, LIGHTHOUSE_LEGACY_PUBLIC_GATEWAY } from "@/lib/nftGateway";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 const LIGHTHOUSE_FILE_UPLOAD_URL = "https://upload.lighthouse.storage/api/v0/add";
-const LIGHTHOUSE_PUBLIC_GATEWAY = "https://gateway.lighthouse.storage/ipfs";
 const OPENSEA_API_URL = "https://api.opensea.io/api/v2";
 const OPENSEA_COLLECTION_URL = "https://opensea.io/collection/jesse-hill-climb";
 const MAX_BODY_BYTES = 1_200_000;
@@ -179,7 +179,12 @@ async function validateArchive(
   const reader = await CarReader.fromBytes(carBytes);
   const roots = await reader.getRoots();
   const rootCids = roots.map((root) => root.toString());
-  const isFlatPackage = mint.tokenURI === `ipfs://${claimedRoot}` || mint.tokenURI === `${LIGHTHOUSE_PUBLIC_GATEWAY}/${claimedRoot}`;
+  const deliveryGateway = mint.tokenURI === `${LIGHTHOUSE_LEGACY_PUBLIC_GATEWAY}/${claimedRoot}`
+    ? LIGHTHOUSE_LEGACY_PUBLIC_GATEWAY
+    : LIGHTHOUSE_DELIVERY_GATEWAY;
+  const isFlatPackage = mint.tokenURI === `ipfs://${claimedRoot}`
+    || mint.tokenURI === `${LIGHTHOUSE_LEGACY_PUBLIC_GATEWAY}/${claimedRoot}`
+    || mint.tokenURI === `${LIGHTHOUSE_DELIVERY_GATEWAY}/${claimedRoot}`;
   const isLegacyDirectoryPackage = mint.tokenURI === `ipfs://${claimedRoot}/metadata.json`;
   if (
     (!isFlatPackage && !isLegacyDirectoryPackage) ||
@@ -238,11 +243,14 @@ async function validateArchive(
 
   const imageUri = typeof metadata.image === "string" ? metadata.image : "";
   const ipfsImagePrefix = "ipfs://";
-  const gatewayImagePrefix = `${LIGHTHOUSE_PUBLIC_GATEWAY}/`;
+  const deliveryImagePrefix = `${LIGHTHOUSE_DELIVERY_GATEWAY}/`;
+  const legacyImagePrefix = `${LIGHTHOUSE_LEGACY_PUBLIC_GATEWAY}/`;
   const imageCid = imageUri.startsWith(ipfsImagePrefix)
     ? imageUri.slice(ipfsImagePrefix.length)
-    : imageUri.startsWith(gatewayImagePrefix)
-      ? imageUri.slice(gatewayImagePrefix.length)
+    : imageUri.startsWith(deliveryImagePrefix)
+      ? imageUri.slice(deliveryImagePrefix.length)
+      : imageUri.startsWith(legacyImagePrefix)
+        ? imageUri.slice(legacyImagePrefix.length)
       : "";
   if (!imageCid || imageCid.includes("/")) throw new Error("invalid_metadata_schema");
   try { CID.parse(imageCid); } catch { throw new Error("invalid_metadata_schema"); }
@@ -257,7 +265,8 @@ async function validateArchive(
   if (Math.abs(dimensions.width / dimensions.height - 16 / 9) > 0.02) throw new Error("invalid_image_ratio");
 
   const expectedImageUri = `ipfs://${imageCid}`;
-  const expectedGatewayImageUri = `${LIGHTHOUSE_PUBLIC_GATEWAY}/${imageCid}`;
+  const expectedDeliveryImageUri = `${LIGHTHOUSE_DELIVERY_GATEWAY}/${imageCid}`;
+  const expectedLegacyImageUri = `${LIGHTHOUSE_LEGACY_PUBLIC_GATEWAY}/${imageCid}`;
   const properties = isRecord(metadata.properties) ? metadata.properties : null;
   const propertyFile = properties && Array.isArray(properties.files) && properties.files.length === 1 && isRecord(properties.files[0])
     ? properties.files[0]
@@ -265,7 +274,7 @@ async function validateArchive(
   const expectedDriver = Number(mint.driverId) === 0 ? "Jesse" : Number(mint.driverId) === 1 ? "Brian" : null;
   if (
     typeof metadata.name !== "string" || !metadata.name.startsWith("Jesse Hill Climb — ") ||
-    ![expectedImageUri, expectedGatewayImageUri].includes(String(metadata.image)) ||
+    ![expectedImageUri, expectedDeliveryImageUri, expectedLegacyImageUri].includes(String(metadata.image)) ||
     propertyFile?.uri !== expectedImageUri ||
     propertyFile?.type !== "image/jpeg" ||
     metadata.external_url !== expectedSiteUrl ||
@@ -286,6 +295,7 @@ async function validateArchive(
     metadataPath,
     rootCids,
     isLegacyDirectoryPackage,
+    deliveryGateway,
   };
 }
 
@@ -330,16 +340,17 @@ async function firstMatchingUrl(urls: string[], expectedBytes: Uint8Array, kind:
 }
 
 async function waitForGatewayAssets(
+  gateway: string,
   metadataPath: string,
   imageCid: string,
   metadataBytes: Uint8Array,
   imageBytes: Uint8Array,
   delays = [0, 750, 1_500, 3_000],
 ) {
-  // Future tokenURI/image fields point to these exact public URLs. Only clear
+  // Future tokenURI/image fields point to these exact paid-gateway URLs. Only clear
   // the local recovery package after those same URLs serve the expected bytes.
-  const metadataCandidates = [`${LIGHTHOUSE_PUBLIC_GATEWAY}/${metadataPath}`];
-  const imageCandidates = [`${LIGHTHOUSE_PUBLIC_GATEWAY}/${imageCid}`];
+  const metadataCandidates = [`${gateway}/${metadataPath}`];
+  const imageCandidates = [`${gateway}/${imageCid}`];
   for (const delay of delays) {
     if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
     const [metadataUrl, artworkUrl] = await Promise.all([
@@ -404,6 +415,7 @@ function scheduleMarketplaceFinalization(
   after(async () => {
     try {
       const assets = await waitForGatewayAssets(
+        archive.deliveryGateway,
         archive.metadataPath,
         archive.imageCid,
         archive.metadataBytes,
@@ -505,7 +517,8 @@ export async function POST(request: Request) {
   const rootCid = String(body.rootCid ?? "");
   const tokenUri = String(body.tokenUri ?? "");
   const validTokenUri = tokenUri === `ipfs://${rootCid}`
-    || tokenUri === `${LIGHTHOUSE_PUBLIC_GATEWAY}/${rootCid}`
+    || tokenUri === `${LIGHTHOUSE_LEGACY_PUBLIC_GATEWAY}/${rootCid}`
+    || tokenUri === `${LIGHTHOUSE_DELIVERY_GATEWAY}/${rootCid}`
     || tokenUri === `ipfs://${rootCid}/metadata.json`;
   if (!/^0x[0-9a-fA-F]{64}$/.test(txHash) || !/^b[a-z2-7]{40,100}$/.test(rootCid) || !validTokenUri) {
     return jsonError("invalid_mint_package", 400);
@@ -532,6 +545,7 @@ export async function POST(request: Request) {
   const isRetry = body.retry === true;
   if (isRetry) {
     const existingAssets = await waitForGatewayAssets(
+      archive.deliveryGateway,
       archive.metadataPath,
       archive.imageCid,
       archive.metadataBytes,
@@ -572,13 +586,13 @@ export async function POST(request: Request) {
   // propagation can take longer than a serverless request and is not a failed
   // mint or failed upload. Verify it and refresh OpenSea after responding.
   scheduleMarketplaceFinalization(contractValue, mint, archive);
-  const publicAssets = {
-    metadataUrl: `${LIGHTHOUSE_PUBLIC_GATEWAY}/${archive.metadataPath}`,
-    artworkUrl: `${LIGHTHOUSE_PUBLIC_GATEWAY}/${archive.imageCid}`,
+  const deliveryAssets = {
+    metadataUrl: `${archive.deliveryGateway}/${archive.metadataPath}`,
+    artworkUrl: `${archive.deliveryGateway}/${archive.imageCid}`,
   };
   const refreshState = (process.env.OPENSEA_API_KEY ?? "").trim() ? "scheduled" as const : "not_configured" as const;
   return NextResponse.json(
-    successPayload(contractValue, mint, rootCid, tokenUri, publicAssets, false, refreshState, "propagating"),
+    successPayload(contractValue, mint, rootCid, tokenUri, deliveryAssets, false, refreshState, "propagating"),
     { headers: RESPONSE_HEADERS },
   );
 }
