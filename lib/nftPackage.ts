@@ -5,11 +5,9 @@ import {
 } from "ipfs-car";
 import { LIGHTHOUSE_DELIVERY_GATEWAY } from "@/lib/nftGateway";
 
-const IMAGE_SIZE = 960;
+const IMAGE_WIDTH = 960;
+const IMAGE_HEIGHT = 540;
 const JPEG_QUALITY = 0.9;
-// Keep the car and the road ahead in frame when the landscape gameplay
-// capture is cropped to the square artwork shape used by marketplace cards.
-const LANDSCAPE_CROP_OFFSET = 0.14;
 
 export type RunNftPackage = {
   carBase64: string;
@@ -51,30 +49,18 @@ async function compressSnapshot(dataUrl: string): Promise<Blob> {
 
   const source = await fetch(dataUrl).then((response) => response.blob());
   const image = await imageFromBlob(source);
-  const sourceSize = Math.max(1, Math.min(image.naturalWidth, image.naturalHeight));
-  const excessWidth = Math.max(0, image.naturalWidth - sourceSize);
-  const excessHeight = Math.max(0, image.naturalHeight - sourceSize);
-  const sourceX = Math.round(excessWidth * LANDSCAPE_CROP_OFFSET);
-  const sourceY = Math.round(excessHeight / 2);
+  const scale = Math.min(1, IMAGE_WIDTH / image.naturalWidth, IMAGE_HEIGHT / image.naturalHeight);
+  const width = Math.max(1, Math.round(image.naturalWidth * scale));
+  const height = Math.max(1, Math.round(image.naturalHeight * scale));
   const canvas = document.createElement("canvas");
-  canvas.width = IMAGE_SIZE;
-  canvas.height = IMAGE_SIZE;
+  canvas.width = width;
+  canvas.height = height;
 
   const context = canvas.getContext("2d", { alpha: false });
   if (!context) throw new Error("Could not prepare the run image");
   context.imageSmoothingEnabled = true;
   context.imageSmoothingQuality = "high";
-  context.drawImage(
-    image,
-    sourceX,
-    sourceY,
-    sourceSize,
-    sourceSize,
-    0,
-    0,
-    IMAGE_SIZE,
-    IMAGE_SIZE,
-  );
+  context.drawImage(image, 0, 0, width, height);
 
   const jpeg = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", JPEG_QUALITY));
   if (!jpeg) throw new Error("Could not compress the run image");
