@@ -38,11 +38,11 @@ const UPLOAD_TIMEOUT_MS = 12_000;
 const GATEWAY_TIMEOUT_MS = 2_500;
 const RESPONSE_HEADERS = { "cache-control": "no-store" } as const;
 
-const RATE_LIMIT = {
-  name: "nft:finalize",
+const INGRESS_RATE_LIMIT = {
+  name: "nft:finalize:ingress",
   ip: [
-    { limit: 3, windowMs: 60_000 },
-    { limit: 12, windowMs: 60 * 60_000 },
+    { limit: 30, windowMs: 60_000 },
+    { limit: 120, windowMs: 60 * 60_000 },
   ],
   global: [{ limit: 60, windowMs: 60_000 }],
   headers: RESPONSE_HEADERS,
@@ -516,7 +516,10 @@ async function uploadFiles(
 
 export async function POST(request: Request) {
   const deadlineAt = Date.now() + FINALIZE_DEADLINE_MS;
-  const limited = enforceRateLimit(request, RATE_LIMIT);
+  // Keep a coarse ingress ceiling for oversized or malformed requests. The
+  // stricter limiter below is isolated per transaction so an old retry queue
+  // cannot consume the budget needed to finalize a newly approved mint.
+  const limited = enforceRateLimit(request, INGRESS_RATE_LIMIT);
   if (limited) return limited;
   if (!sameOrigin(request)) return jsonError("forbidden_origin", 403);
   if (!(request.headers.get("content-type") ?? "").toLowerCase().includes("application/json")) {
@@ -549,6 +552,15 @@ export async function POST(request: Request) {
   if (!/^0x[0-9a-fA-F]{64}$/.test(txHash) || !/^b[a-z2-7]{40,100}$/.test(rootCid) || !validTokenUri) {
     return jsonError("invalid_mint_package", 400);
   }
+  const transactionLimited = enforceRateLimit(request, {
+    name: `nft:finalize:tx:${txHash.toLowerCase()}`,
+    ip: [
+      { limit: 3, windowMs: 60_000 },
+      { limit: 12, windowMs: 60 * 60_000 },
+    ],
+    headers: RESPONSE_HEADERS,
+  });
+  if (transactionLimited) return transactionLimited;
   const carBytes = base64ToBytes(String(body.carBase64 ?? ""));
   if (!carBytes) return jsonError("invalid_or_oversized_car", 413);
 
