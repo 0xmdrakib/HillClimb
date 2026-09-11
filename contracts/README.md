@@ -28,6 +28,6 @@ OPENSEA_API_KEY=...
 ## Notes
 - `submitScore(meters)` always emits an event, but only updates `bestMeters[address]` if the submitted meters is higher.
 - `mintRun(meters, driverId, tokenURI)` mints sequential tokenIds: 1,2,3...
-- The app computes flat metadata and artwork IPFS CIDs locally, waits for a successful `RunMinted` receipt, then sends their matching multi-root CAR archive to the protected Lighthouse upload route. The contract stores the marketplace-friendly `ipfs://<metadata CID>` URI.
-- Finalization succeeds only after both metadata and artwork are readable from Lighthouse. The route then asks OpenSea to refresh the minted token.
-- Keep `LIGHTHOUSE_API_KEY` and `OPENSEA_API_KEY` server-only. Never add a `NEXT_PUBLIC_` prefix to either key.
+- The app computes flat metadata and artwork IPFS CIDs locally and keeps their CAR package in the browser until `RunMinted` succeeds. The protected finalizer verifies that receipt and package, then uploads the extracted `metadata.json` and `run.jpg` as normal Lighthouse files under those exact CIDs. The contract stores the marketplace-friendly `ipfs://<metadata CID>` URI.
+- Finalization succeeds only after both metadata and artwork can be fetched back byte-for-byte from a Lighthouse gateway. When an optional OpenSea API key is configured, the route also queues a metadata refresh.
+- Keep `LIGHTHOUSE_API_KEY` and the optional `OPENSEA_API_KEY` server-only. Never add a `NEXT_PUBLIC_` prefix to either key.

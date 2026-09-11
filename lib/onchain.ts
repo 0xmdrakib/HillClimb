@@ -293,7 +293,16 @@ export async function waitForBaseTransaction(transactionHash: string): Promise<v
     pollingInterval: 1_200,
     timeout: 180_000,
   });
-  if (receipt.status !== "success") throw new Error("Transaction failed");
+  if (receipt.status !== "success") throw new TransactionRevertedError();
+}
+
+export class TransactionRevertedError extends Error {
+  readonly code = "TRANSACTION_REVERTED";
+
+  constructor() {
+    super("Transaction failed");
+    this.name = "TransactionRevertedError";
+  }
 }
 
 

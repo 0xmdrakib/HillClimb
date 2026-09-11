@@ -21,6 +21,7 @@ import {
 import {
   getOrConnectWallet, tryAutoConnectWallet, readBestMeters,
   submitScoreMeters, mintRunNft, waitForBaseTransaction, sendEthTip, clearCachedWallet,
+  TransactionRevertedError,
 } from "@/lib/onchain";
 import { audioManager } from "@/lib/audio";
 import { buildRunNftPackage, type RunNftPackage } from "@/lib/nftPackage";
@@ -59,7 +60,19 @@ function dailySeedUTC() {
 function fmtM(m: number) { return String(Math.max(0, Math.floor(m || 0))); }
 function fmtKmh(kmh: number) { return String(Math.max(0, Math.floor(kmh || 0))); }
 function shortHash(h?: string | null) { if (!h) return ""; if (h.length <= 12) return h; return `${h.slice(0, 6)}…${h.slice(-4)}`; }
+class MintStorageError extends Error {
+  constructor(readonly reason: string) {
+    super(reason);
+    this.name = "MintStorageError";
+  }
+}
 function humanizeTxErr(err: any) {
+  if (err instanceof MintStorageError) {
+    if (err.reason === "rate_limited") return "Mint succeeded. Storage retry is rate-limited — try again shortly; it will not mint twice.";
+    if (err.reason === "transaction_not_confirmed") return "Mint succeeded in your wallet. Server confirmation is still catching up — retry storage shortly.";
+    if (err.reason === "invalid_car_archive") return "Mint succeeded, but its local artwork package could not be verified.";
+    return "Mint succeeded, but IPFS storage is not finished. Tap Retry storage — it will not mint again.";
+  }
   const e = err?.cause ?? err;
   const code = e?.code ?? e?.cause?.code;
   const msg = String(e?.shortMessage ?? e?.message ?? e?.details ?? "").toLowerCase();
@@ -70,7 +83,7 @@ function humanizeTxErr(err: any) {
   if (msg.includes("nft_storage_not_configured")) return "NFT storage is not configured";
   if (msg.includes("rate_limited")) return "Too many attempts — please try again shortly";
   if (msg.includes("lighthouse")) return "NFT storage is temporarily unavailable — retry is safe";
-  if (msg.includes("transaction_not_confirmed")) return "Mint confirmation is still pending — retry shortly";
+  if (msg.includes("transaction_not_confirmed") || msg.includes("timed out") || msg.includes("timeout")) return "Mint confirmation is still pending — retry shortly";
   return "Transaction failed";
 }
 
@@ -493,18 +506,23 @@ export default function Page() {
   const finalizeMintStorage = async (pending: { package: RunNftPackage; txHash: string }) => {
     await waitForBaseTransaction(pending.txHash);
     setMintStage("Securing artwork on IPFS…");
-    const response = await fetch("/api/nft/finalize", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        txHash: pending.txHash,
-        rootCid: pending.package.rootCid,
-        tokenUri: pending.package.tokenUri,
-        carBase64: pending.package.carBase64,
-      }),
-    });
+    let response: Response;
+    try {
+      response = await fetch("/api/nft/finalize", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          txHash: pending.txHash,
+          rootCid: pending.package.rootCid,
+          tokenUri: pending.package.tokenUri,
+          carBase64: pending.package.carBase64,
+        }),
+      });
+    } catch {
+      throw new MintStorageError("storage_request_failed");
+    }
     const result = await response.json().catch(() => null);
-    if (!response.ok || !result?.ok) throw new Error(result?.error || "NFT storage failed");
+    if (!response.ok || !result?.ok) throw new MintStorageError(String(result?.error || "nft_storage_failed"));
     setMintGatewayUrl(String(result.metadataUrl || result.gatewayUrl));
     setMintArtworkUrl(result.artworkUrl ? String(result.artworkUrl) : null);
     setMintOpenSeaUrl(result.openSeaUrl ? String(result.openSeaUrl) : null);
@@ -567,13 +585,13 @@ export default function Page() {
       await finalizeMintStorage(pending);
     } catch (error: unknown) {
       const message = humanizeTxErr(error);
-      if (/transaction failed/i.test(message)) {
+      if (error instanceof TransactionRevertedError) {
         pendingMintRef.current = null;
         setHasPendingMint(false);
         await removePendingRunMint().catch(() => undefined);
       }
       setActionErr(message);
-      setMintStage(pendingMintRef.current ? "Mint confirmed — storage retry available" : "");
+      setMintStage(pendingMintRef.current ? "Mint confirmed — storage retry available (no second mint)" : "");
     } finally {
       setMintBusy(false);
     }
@@ -587,7 +605,7 @@ export default function Page() {
         pendingMintRef.current = pending;
         setHasPendingMint(true);
         setMintTx(pending.txHash);
-        setMintStage("Mint confirmed — storage retry available");
+        setMintStage("Mint confirmed — storage retry available (no second mint)");
       })
       .catch(() => undefined);
     return () => { active = false; };
