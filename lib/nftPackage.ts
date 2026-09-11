@@ -1,5 +1,6 @@
 import {
   CAREncoderStream,
+  createDirectoryEncoderStream,
   createFileEncoderStream,
   type Block,
 } from "ipfs-car";
@@ -147,20 +148,21 @@ export async function buildRunNftPackage(input: RunNftPackageInput): Promise<Run
     "metadata.json",
     { type: "application/json" },
   );
-  const metadataBlocks = await collectBlocks(createFileEncoderStream(metadataFile));
-  const metadataRoot = metadataBlocks.at(-1)!.cid;
-  const metadataCid = metadataRoot.toString();
-  // Both files are CAR roots. Lighthouse pins the exact metadata and image CIDs
-  // only after the mint succeeds.
-  const car = await encodeCar([...metadataBlocks, ...imageBlocks], [metadataRoot, imageRoot]);
+  // Package both assets under one deterministic UnixFS directory root. The
+  // finalizer imports this CAR once through Lighthouse's official DAG-import
+  // endpoint, so metadata and artwork cannot be indexed independently.
+  const directoryBlocks = await collectBlocks(createDirectoryEncoderStream([metadataFile, imageFile]));
+  const directoryRoot = directoryBlocks.at(-1)!.cid;
+  const rootCid = directoryRoot.toString();
+  const car = await encodeCar(directoryBlocks, [directoryRoot]);
 
   return {
     carBase64: bytesToBase64(car),
     carBytes: car.byteLength,
     imageBytes: imageBlob.size,
-    rootCid: metadataCid,
+    rootCid,
     // The URL remains immutable and content-addressed while using the paid
     // Lighthouse delivery gateway configured for this project.
-    tokenUri: `${LIGHTHOUSE_DELIVERY_GATEWAY}/${metadataCid}`,
+    tokenUri: `${LIGHTHOUSE_DELIVERY_GATEWAY}/${rootCid}/metadata.json`,
   };
 }
