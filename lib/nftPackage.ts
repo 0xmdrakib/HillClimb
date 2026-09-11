@@ -112,7 +112,6 @@ export async function buildRunNftPackage(input: RunNftPackageInput): Promise<Run
     // The canonical IPFS URI remains in properties.files below.
     image: imageGatewayUrl,
     external_url: input.siteUrl,
-    background_color: "EAF3F8",
     attributes: [
       { trait_type: "Distance", value: meters, display_type: "number" },
       { trait_type: "Driver", value: input.driver },
