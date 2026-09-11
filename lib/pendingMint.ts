@@ -7,6 +7,8 @@ const DATABASE_VERSION = 1;
 const STORE_NAME = "pending-nft";
 const RECORD_KEY = "latest";
 const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
+const MAX_PENDING_MINTS = 12;
+const LIGHTHOUSE_PUBLIC_GATEWAY = "https://gateway.lighthouse.storage/ipfs";
 
 export type PendingRunMint = {
   version: 1;
@@ -46,7 +48,9 @@ function isValidPending(value: unknown): value is PendingRunMint {
   const pending = value as PendingRunMint;
   const nftPackage = pending?.package;
   const tokenUri = nftPackage?.tokenUri ?? "";
-  const validTokenUri = tokenUri === `ipfs://${nftPackage?.rootCid}` || tokenUri === `ipfs://${nftPackage?.rootCid}/metadata.json`;
+  const validTokenUri = tokenUri === `ipfs://${nftPackage?.rootCid}`
+    || tokenUri === `ipfs://${nftPackage?.rootCid}/metadata.json`
+    || tokenUri === `${LIGHTHOUSE_PUBLIC_GATEWAY}/${nftPackage?.rootCid}`;
   return (
     pending?.version === 1 &&
     Number.isFinite(pending.savedAt) &&
@@ -64,19 +68,57 @@ function isValidPending(value: unknown): value is PendingRunMint {
   );
 }
 
+function validPendingRecords(value: unknown): PendingRunMint[] {
+  const records = Array.isArray(value) ? value : value ? [value] : [];
+  return records
+    .filter(isValidPending)
+    .sort((left, right) => left.savedAt - right.savedAt)
+    .slice(-MAX_PENDING_MINTS);
+}
+
+async function updatePendingRecords(update: (records: PendingRunMint[]) => PendingRunMint[]): Promise<void> {
+  const database = await openDatabase();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const transaction = database.transaction(STORE_NAME, "readwrite");
+      const store = transaction.objectStore(STORE_NAME);
+      const readRequest = store.get(RECORD_KEY);
+      readRequest.onsuccess = () => {
+        const next = update(validPendingRecords(readRequest.result)).slice(-MAX_PENDING_MINTS);
+        if (next.length) store.put(next, RECORD_KEY);
+        else store.delete(RECORD_KEY);
+      };
+      readRequest.onerror = () => transaction.abort();
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error ?? new Error("Local NFT storage failed"));
+      transaction.onabort = () => reject(transaction.error ?? new Error("Local NFT storage failed"));
+    });
+  } finally {
+    database.close();
+  }
+}
+
 export async function savePendingRunMint(pending: Omit<PendingRunMint, "version" | "savedAt">): Promise<void> {
-  await withStore("readwrite", (store) => store.put({ ...pending, version: 1, savedAt: Date.now() }, RECORD_KEY));
+  const record: PendingRunMint = { ...pending, version: 1, savedAt: Date.now() };
+  await updatePendingRecords((records) => [
+    ...records.filter((item) => item.txHash.toLowerCase() !== record.txHash.toLowerCase()),
+    record,
+  ]);
 }
 
-export async function loadPendingRunMint(): Promise<PendingRunMint | null> {
-  if (typeof indexedDB === "undefined") return null;
+export async function loadPendingRunMints(): Promise<PendingRunMint[]> {
+  if (typeof indexedDB === "undefined") return [];
   const value = await withStore<unknown>("readonly", (store) => store.get(RECORD_KEY));
-  if (isValidPending(value)) return value;
-  await removePendingRunMint();
-  return null;
+  const records = validPendingRecords(value);
+  if (!records.length) await removePendingRunMint();
+  return records;
 }
 
-export async function removePendingRunMint(): Promise<void> {
+export async function removePendingRunMint(txHash?: string): Promise<void> {
   if (typeof indexedDB === "undefined") return;
-  await withStore("readwrite", (store) => store.delete(RECORD_KEY));
+  if (!txHash) {
+    await withStore("readwrite", (store) => store.delete(RECORD_KEY));
+    return;
+  }
+  await updatePendingRecords((records) => records.filter((item) => item.txHash.toLowerCase() !== txHash.toLowerCase()));
 }

@@ -7,6 +7,7 @@ import {
 const IMAGE_WIDTH = 960;
 const IMAGE_HEIGHT = 540;
 const JPEG_QUALITY = 0.9;
+const LIGHTHOUSE_PUBLIC_GATEWAY = "https://gateway.lighthouse.storage/ipfs";
 
 export type RunNftPackage = {
   carBase64: string;
@@ -100,13 +101,18 @@ export async function buildRunNftPackage(input: RunNftPackageInput): Promise<Run
   const imageBlocks = await collectBlocks(createFileEncoderStream(imageFile));
   const imageRoot = imageBlocks.at(-1)!.cid;
   const imageCid = imageRoot.toString();
+  const imageGatewayUrl = `${LIGHTHOUSE_PUBLIC_GATEWAY}/${imageCid}`;
   const meters = Math.max(0, Math.floor(input.meters));
   const coins = Math.max(0, Math.floor(input.coins));
 
   const metadata = {
     name: `Jesse Hill Climb — ${meters}m Run`,
     description: "A hill-climb run captured at the finish on Base.",
-    image: `ipfs://${imageCid}`,
+    // OpenSea's generic IPFS media proxy cannot consistently discover newly
+    // uploaded Lighthouse blocks. Point its primary image field at the same
+    // content-addressed bytes through Lighthouse's HTTPS gateway, while the
+    // canonical IPFS URI remains in properties.files below.
+    image: imageGatewayUrl,
     external_url: input.siteUrl,
     background_color: "EAF3F8",
     attributes: [
@@ -130,16 +136,18 @@ export async function buildRunNftPackage(input: RunNftPackageInput): Promise<Run
   );
   const metadataBlocks = await collectBlocks(createFileEncoderStream(metadataFile));
   const metadataRoot = metadataBlocks.at(-1)!.cid;
+  const metadataCid = metadataRoot.toString();
   // Both files are CAR roots. Lighthouse pins the exact metadata and image CIDs
-  // after the mint succeeds, while tokenURI stays the marketplace-friendly
-  // `ipfs://<metadata CID>` form.
+  // only after the mint succeeds.
   const car = await encodeCar([...metadataBlocks, ...imageBlocks], [metadataRoot, imageRoot]);
 
   return {
     carBase64: bytesToBase64(car),
     carBytes: car.byteLength,
     imageBytes: imageBlob.size,
-    rootCid: metadataRoot.toString(),
-    tokenUri: `ipfs://${metadataRoot.toString()}`,
+    rootCid: metadataCid,
+    // The URL remains immutable and content-addressed, but lets OpenSea fetch
+    // directly from Lighthouse instead of its currently unreliable IPFS proxy.
+    tokenUri: `${LIGHTHOUSE_PUBLIC_GATEWAY}/${metadataCid}`,
   };
 }

@@ -21,13 +21,13 @@ Deploy **two** contracts on Base mainnet:
 NEXT_PUBLIC_SCOREBOARD_ADDRESS=0x...
 NEXT_PUBLIC_RUNNFT_ADDRESS=0x...
 LIGHTHOUSE_API_KEY=...
-LIGHTHOUSE_GATEWAY_URL=https://your-gateway.example/ipfs
 OPENSEA_API_KEY=...
 ```
 
 ## Notes
 - `submitScore(meters)` always emits an event, but only updates `bestMeters[address]` if the submitted meters is higher.
 - `mintRun(meters, driverId, tokenURI)` mints sequential tokenIds: 1,2,3...
-- The app computes flat metadata and artwork IPFS CIDs locally and keeps their CAR package in the browser until `RunMinted` succeeds. The protected finalizer verifies that receipt and package, then uploads the extracted `metadata.json` and `run.jpg` as normal Lighthouse files under those exact CIDs. The contract stores the marketplace-friendly `ipfs://<metadata CID>` URI.
-- Finalization succeeds only after both metadata and artwork can be fetched back byte-for-byte from a Lighthouse gateway. When an optional OpenSea API key is configured, the route also queues a metadata refresh.
+- The app computes flat metadata and artwork IPFS CIDs locally and keeps each CAR package in a browser recovery queue until `RunMinted` succeeds and the public Lighthouse gateway serves the exact bytes. The protected finalizer verifies the receipt and package before uploading `metadata.json` and `run.jpg` under those exact CIDs.
+- New tokens use immutable, content-addressed Lighthouse HTTPS URLs for `tokenURI` and the primary image so marketplaces do not depend on a separate IPFS proxy. Metadata also retains the canonical `ipfs://<image CID>` in `properties.files`.
+- The mint UI returns as soon as Lighthouse accepts the exact CIDs. Gateway verification and marketplace refresh continue in the background; the local recovery copy is removed only after a byte-for-byte public-gateway check succeeds.
 - Keep `LIGHTHOUSE_API_KEY` and the optional `OPENSEA_API_KEY` server-only. Never add a `NEXT_PUBLIC_` prefix to either key.

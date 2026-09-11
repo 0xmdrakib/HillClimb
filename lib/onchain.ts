@@ -21,6 +21,8 @@ import {
 } from "@/lib/wallet";
 import { scoreboardAbi, runNftAbi } from "@/lib/onchainAbi";
 import {
+  isPaymasterServiceConfigured,
+  primePaymasterServiceSupport,
   supportsPaymasterService,
   sendSponsoredCallsAndGetTxHash,
 } from "@/lib/gasless";
@@ -52,6 +54,8 @@ async function trySponsoredWriteContract(params: {
   functionName: string;
   args: any[];
 }): Promise<`0x${string}` | null> {
+  if (!isPaymasterServiceConfigured()) return null;
+
   // Only attempt gas sponsorship when the wallet reports support.
   const supported = await supportsPaymasterService({
     provider: params.provider,
@@ -155,18 +159,31 @@ export async function connectWallet(
 type ConnectedWallet = { provider: Eip1193Provider; address: Address };
 let cachedWallet: ConnectedWallet | null = null;
 
+function primePaymasterCapability(wallet: ConnectedWallet) {
+  primePaymasterServiceSupport({
+    provider: wallet.provider,
+    from: wallet.address as `0x${string}`,
+    chainIdHex: BASE_CHAIN_ID_HEX,
+  });
+}
+
 /**
  * Cache the connected wallet to avoid double prompts.
  */
 export async function getOrConnectWallet(opts?: EthereumProviderOptions): Promise<ConnectedWallet> {
-  if (cachedWallet) return cachedWallet;
+  if (cachedWallet) {
+    primePaymasterCapability(cachedWallet);
+    return cachedWallet;
+  }
   const w = await connectWallet(opts);
   cachedWallet = w;
+  primePaymasterCapability(w);
   return w;
 }
 
 export function primeCachedWallet(wallet: ConnectedWallet | null) {
   cachedWallet = wallet;
+  if (wallet) primePaymasterCapability(wallet);
 }
 
 export function clearCachedWallet() {
@@ -185,6 +202,7 @@ export async function tryAutoConnectWallet(opts?: EthereumProviderOptions): Prom
   if (!a0) return null;
   const w = { provider, address: a0 as Address };
   cachedWallet = w;
+  primePaymasterCapability(w);
   return w;
 }
 

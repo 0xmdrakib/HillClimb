@@ -25,7 +25,7 @@ import {
 } from "@/lib/onchain";
 import { audioManager } from "@/lib/audio";
 import { buildRunNftPackage, type RunNftPackage } from "@/lib/nftPackage";
-import { loadPendingRunMint, removePendingRunMint, savePendingRunMint } from "@/lib/pendingMint";
+import { loadPendingRunMints, removePendingRunMint, savePendingRunMint } from "@/lib/pendingMint";
 
 const DEFAULT_INJECTED_WALLET = "any" as const;
 const LAST_WALLET_KEY = "jhc_last_wallet_id_v1";
@@ -68,10 +68,7 @@ class MintStorageError extends Error {
 }
 function humanizeTxErr(err: any) {
   if (err instanceof MintStorageError) {
-    if (err.reason === "rate_limited") return "Mint succeeded. Storage retry is rate-limited — try again shortly; it will not mint twice.";
-    if (err.reason === "transaction_not_confirmed") return "Mint succeeded in your wallet. Server confirmation is still catching up — retry storage shortly.";
-    if (err.reason === "invalid_car_archive") return "Mint succeeded, but its local artwork package could not be verified.";
-    return "Mint succeeded, but IPFS storage is not finished. Tap Retry storage — it will not mint again.";
+    return "Your NFT is minted. Tap Finish NFT to complete its artwork.";
   }
   const e = err?.cause ?? err;
   const code = e?.code ?? e?.cause?.code;
@@ -83,7 +80,7 @@ function humanizeTxErr(err: any) {
   if (msg.includes("nft_storage_not_configured")) return "NFT storage is not configured";
   if (msg.includes("rate_limited")) return "Too many attempts — please try again shortly";
   if (msg.includes("lighthouse")) return "NFT storage is temporarily unavailable — retry is safe";
-  if (msg.includes("transaction_not_confirmed") || msg.includes("timed out") || msg.includes("timeout")) return "Mint confirmation is still pending — retry shortly";
+  if (msg.includes("transaction_not_confirmed") || msg.includes("timed out") || msg.includes("timeout")) return "Transaction confirmation is still pending — check BaseScan before retrying";
   return "Transaction failed";
 }
 
@@ -228,15 +225,14 @@ export default function Page() {
   const [walletSource, setWalletSource] = useState<string>("");
   const [bestOnchainM, setBestOnchainM] = useState<number>(0);
   const [scoreBusy, setScoreBusy] = useState(false);
+  const [scoreConfirmed, setScoreConfirmed] = useState(false);
   const [connectBusy, setConnectBusy] = useState(false);
   const [scoreTx, setScoreTx] = useState<string | null>(null);
   const [mintBusy, setMintBusy] = useState(false);
   const [mintStage, setMintStage] = useState("");
   const [mintTx, setMintTx] = useState<string | null>(null);
   const [mintGatewayUrl, setMintGatewayUrl] = useState<string | null>(null);
-  const [mintArtworkUrl, setMintArtworkUrl] = useState<string | null>(null);
   const [mintOpenSeaUrl, setMintOpenSeaUrl] = useState<string | null>(null);
-  const [mintCollectionUrl, setMintCollectionUrl] = useState<string | null>(null);
   const [hasPendingMint, setHasPendingMint] = useState(false);
   const [actionErr, setActionErr] = useState<string>("");
   const [walletModalOpen, setWalletModalOpen] = useState(false);
@@ -257,6 +253,7 @@ export default function Page() {
   const gameRef = useRef<HillClimbHandle | null>(null);
   const walletRef = useRef<{ provider: Eip1193Provider; address: Address } | null>(null);
   const pendingMintRef = useRef<{ package: RunNftPackage; txHash: string } | null>(null);
+  const mintVerificationRunsRef = useRef<Map<string, number>>(new Map());
 
   useEffect(() => {
     if (gamePhase === "menu") audioManager.suspend();
@@ -392,7 +389,8 @@ export default function Page() {
       setWalletAddr(address); walletRef.current = { provider, address };
       setWalletSource(opts?.walletLabel ?? labelFromProvider(provider));
       if (walletId) { try { localStorage.setItem(LAST_WALLET_KEY, walletId); } catch { } }
-      await refreshBest(address); return address;
+      void refreshBest(address).catch(() => undefined);
+      return address;
     } finally { setConnectBusy(false); }
   };
 
@@ -463,6 +461,7 @@ export default function Page() {
     setWalletAddr(null);
     setWalletSource("");
     setBestOnchainM(0);
+    setScoreConfirmed(false);
     setScoreTx(null);
     setActionErr("");
     setWalletModalOpen(false);
@@ -485,27 +484,57 @@ export default function Page() {
 
   const onTryAgain = () => {
     setPaused(false); setGameOverShot(null); setGameOverMeters(0); setGameOverCoins(0);
-    setScoreBusy(false); setScoreTx(null); setMintBusy(false); setMintStage(""); setMintTx(null); setMintGatewayUrl(null);
-    setMintArtworkUrl(null); setMintOpenSeaUrl(null); setMintCollectionUrl(null); setActionErr("");
+    setScoreBusy(false); setScoreConfirmed(false); setScoreTx(null); setMintBusy(false); setMintStage(""); setMintTx(null); setMintGatewayUrl(null);
+    setMintOpenSeaUrl(null); setActionErr("");
     gameRef.current?.reset();
   };
 
   const onSubmitScore = async () => {
     try {
-      setActionErr(""); setScoreTx(null);
+      setActionErr(""); setScoreTx(null); setScoreConfirmed(false);
       if (!scoreboardAddress) { setActionErr("Missing NEXT_PUBLIC_SCOREBOARD_ADDRESS in .env.local"); return; }
       setScoreBusy(true);
       const addr = walletAddr ?? (await ensureConnected());
       const meters = Math.max(0, Math.floor(gameOverMeters || state.distanceM));
       const w = walletRef.current;
       const tx = await submitScoreMeters(scoreboardAddress, meters, w ?? undefined);
-      setScoreTx(tx); await refreshBest(addr);
+      setScoreTx(tx);
+      await waitForBaseTransaction(tx);
+      setScoreConfirmed(true);
+      void refreshBest(addr).catch(() => undefined);
     } catch (e: any) { setActionErr(humanizeTxErr(e)); } finally { setScoreBusy(false); }
   };
 
-  const finalizeMintStorage = async (pending: { package: RunNftPackage; txHash: string }) => {
-    await waitForBaseTransaction(pending.txHash);
-    setMintStage("Securing artwork on IPFS…");
+  async function silentlyVerifyMint(pending: { package: RunNftPackage; txHash: string }) {
+    const runs = mintVerificationRunsRef.current;
+    const runId = (runs.get(pending.txHash) ?? 0) + 1;
+    runs.set(pending.txHash, runId);
+    for (const delay of [15_000, 45_000]) {
+      await new Promise((resolve) => window.setTimeout(resolve, delay));
+      if (runs.get(pending.txHash) !== runId) return;
+      try {
+        if (await finalizeMintStorage(pending, true, { receiptConfirmed: true, silent: true, scheduleRetry: false })) return;
+      } catch (error) {
+        if (error instanceof TransactionRevertedError) {
+          if (pendingMintRef.current?.txHash === pending.txHash) {
+            pendingMintRef.current = null;
+            setHasPendingMint(false);
+          }
+          runs.delete(pending.txHash);
+          await removePendingRunMint(pending.txHash).catch(() => undefined);
+          return;
+        }
+      }
+    }
+  }
+
+  async function finalizeMintStorage(
+    pending: { package: RunNftPackage; txHash: string },
+    retry = false,
+    options: { receiptConfirmed?: boolean; silent?: boolean; scheduleRetry?: boolean } = {},
+  ): Promise<boolean> {
+    if (!options.receiptConfirmed) await waitForBaseTransaction(pending.txHash);
+    if (!options.silent) setMintStage("Mint successful");
     let response: Response;
     try {
       response = await fetch("/api/nft/finalize", {
@@ -516,6 +545,7 @@ export default function Page() {
           rootCid: pending.package.rootCid,
           tokenUri: pending.package.tokenUri,
           carBase64: pending.package.carBase64,
+          retry,
         }),
       });
     } catch {
@@ -523,38 +553,46 @@ export default function Page() {
     }
     const result = await response.json().catch(() => null);
     if (!response.ok || !result?.ok) throw new MintStorageError(String(result?.error || "nft_storage_failed"));
-    setMintGatewayUrl(String(result.metadataUrl || result.gatewayUrl));
-    setMintArtworkUrl(result.artworkUrl ? String(result.artworkUrl) : null);
-    setMintOpenSeaUrl(result.openSeaUrl ? String(result.openSeaUrl) : null);
-    setMintCollectionUrl(result.collectionUrl ? String(result.collectionUrl) : null);
-    setMintStage(
-      result.openSeaRefresh === "queued"
-        ? "IPFS verified · OpenSea refresh queued"
-        : result.openSeaRefresh === "failed"
-          ? "IPFS verified · OpenSea refresh pending"
-          : "Minted · artwork verified on IPFS",
-    );
-    pendingMintRef.current = null;
-    setHasPendingMint(false);
-    await removePendingRunMint().catch(() => undefined);
-  };
+    if (!options.silent) {
+      setMintGatewayUrl(String(result.metadataUrl || result.gatewayUrl));
+      setMintOpenSeaUrl(result.openSeaUrl ? String(result.openSeaUrl) : null);
+      setMintStage("Mint successful");
+      setHasPendingMint(false);
+    }
+
+    const verified = result.availability !== "propagating";
+    if (verified) {
+      const wasActive = pendingMintRef.current?.txHash === pending.txHash;
+      if (wasActive) pendingMintRef.current = null;
+      mintVerificationRunsRef.current.delete(pending.txHash);
+      if (wasActive || !options.silent) setHasPendingMint(false);
+      await removePendingRunMint(pending.txHash).catch(() => undefined);
+      return true;
+    }
+
+    // The exact CIDs were accepted by Lighthouse, so the mint is successful.
+    // Keep the local CAR until a gateway byte-check succeeds, and retry quietly.
+    if (pendingMintRef.current?.txHash === pending.txHash) pendingMintRef.current = null;
+    if (options.scheduleRetry !== false) void silentlyVerifyMint(pending);
+    return false;
+  }
 
   const onMintNft = async () => {
-    setActionErr(""); setMintGatewayUrl(null); setMintArtworkUrl(null); setMintOpenSeaUrl(null); setMintCollectionUrl(null); setMintBusy(true);
+    setActionErr(""); setMintGatewayUrl(null); setMintOpenSeaUrl(null); setMintBusy(true);
     try {
       if (!runNftAddress) throw new Error("NFT minting is not configured");
 
       const existingPending = pendingMintRef.current;
       if (existingPending) {
         setMintTx(existingPending.txHash);
-        setMintStage("Confirming previous mint…");
-        await finalizeMintStorage(existingPending);
+        setMintStage("Finishing NFT…");
+        await finalizeMintStorage(existingPending, true);
         return;
       }
 
       if (!gameOverShot) throw new Error("Run snapshot is unavailable");
       setMintTx(null);
-      setMintStage("Optimizing artwork locally…");
+      setMintStage("Opening wallet…");
       const nftPackage = await buildRunNftPackage({
         snapshotDataUrl: gameOverShot,
         meters: gameOverMeters || state.distanceM,
@@ -566,8 +604,8 @@ export default function Page() {
         siteUrl: url,
       });
 
-      setMintStage("Confirm mint in your wallet…");
-      const address = walletAddr ?? (await ensureConnected());
+      setMintStage("Waiting for wallet…");
+      if (!walletAddr) await ensureConnected();
       const wallet = walletRef.current;
       const txHash = await mintRunNft(
         runNftAddress,
@@ -581,17 +619,27 @@ export default function Page() {
       setHasPendingMint(true);
       await savePendingRunMint(pending).catch(() => undefined);
       setMintTx(txHash);
-      setMintStage(`Confirming on Base for ${shortHash(address)}…`);
+      setMintStage("Confirming mint…");
       await finalizeMintStorage(pending);
     } catch (error: unknown) {
       const message = humanizeTxErr(error);
       if (error instanceof TransactionRevertedError) {
+        const revertedTxHash = pendingMintRef.current?.txHash;
         pendingMintRef.current = null;
         setHasPendingMint(false);
-        await removePendingRunMint().catch(() => undefined);
+        if (revertedTxHash) {
+          mintVerificationRunsRef.current.delete(revertedTxHash);
+          await removePendingRunMint(revertedTxHash).catch(() => undefined);
+        }
       }
-      setActionErr(message);
-      setMintStage(pendingMintRef.current ? "Mint confirmed — storage retry available (no second mint)" : "");
+      if (error instanceof MintStorageError && pendingMintRef.current) {
+        console.error("NFT finalization failed", { reason: error.reason, txHash: pendingMintRef.current.txHash });
+        setActionErr("");
+        setMintStage("Mint successful");
+      } else {
+        setActionErr(message);
+        setMintStage("");
+      }
     } finally {
       setMintBusy(false);
     }
@@ -599,16 +647,30 @@ export default function Page() {
 
   useEffect(() => {
     let active = true;
-    void loadPendingRunMint()
-      .then((pending) => {
-        if (!active || !pending) return;
-        pendingMintRef.current = pending;
-        setHasPendingMint(true);
-        setMintTx(pending.txHash);
-        setMintStage("Mint confirmed — storage retry available (no second mint)");
-      })
-      .catch(() => undefined);
-    return () => { active = false; };
+    void (async () => {
+      let firstRequest = true;
+      for (let pass = 0; pass < 2; pass += 1) {
+        const pendings = await loadPendingRunMints();
+        if (!pendings.length) return;
+        for (const pending of pendings) {
+          if (!firstRequest) {
+            await new Promise((resolve) => window.setTimeout(resolve, 21_000));
+            if (!active) return;
+          }
+          firstRequest = false;
+          try {
+            await finalizeMintStorage(pending, true, { silent: true, scheduleRetry: false });
+          } catch (error) {
+            if (!active) return;
+            if (error instanceof TransactionRevertedError) {
+              mintVerificationRunsRef.current.delete(pending.txHash);
+              await removePendingRunMint(pending.txHash).catch(() => undefined);
+            }
+          }
+        }
+      }
+    })().catch(() => undefined);
+    return () => { active = false; mintVerificationRunsRef.current.clear(); };
   }, []);
 
   const handleSelectVehicle = (vid: VehicleId) => { setSelectedVehicle(vid); };
@@ -673,7 +735,11 @@ export default function Page() {
           upgrades={allUpgrades}
           achievements={achievements}
           totalRuns={totalRuns}
-          onPlay={() => setGamePhase("playing")}
+          onPlay={() => {
+            setScoreBusy(false); setScoreConfirmed(false); setScoreTx(null);
+            setMintBusy(false); setMintStage(""); setMintTx(null); setMintGatewayUrl(null); setMintOpenSeaUrl(null);
+            setActionErr(""); setGamePhase("playing");
+          }}
           onSelectVehicle={handleSelectVehicle}
           onSelectMap={handleSelectMap}
           onSelectHead={setHead}
@@ -835,25 +901,25 @@ export default function Page() {
                 <div className="endControlStack">
                   <div className="endOnchain">
                     <div className="endOnchainBtns">
-                      <button type="button" className="endAction endActionScore" disabled={scoreBusy || mintBusy || connectBusy} onClick={onSubmitScore}>
+                      <button type="button" className="endAction endActionScore" disabled={scoreBusy || scoreConfirmed || mintBusy || connectBusy} onClick={onSubmitScore}>
                         <span className="endActionIcon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 4.75h11.5L19 7.3v11.95H5z"/><path d="M8 4.75v5h7v-5M8.5 19.25v-5.5h7v5.5"/></svg></span>
-                        <span className="endActionCopy"><strong>{scoreBusy ? "Saving…" : "Save score"}</strong><small>Permanent record on Base</small></span>
+                        <span className="endActionCopy"><strong>{scoreBusy ? (scoreTx ? "Confirming…" : "Opening wallet…") : scoreConfirmed ? "Score saved" : "Save score"}</strong><small>{scoreConfirmed ? "Saved permanently on Base" : "Permanent record on Base"}</small></span>
                         <span className="endActionArrow" aria-hidden="true">→</span>
                       </button>
                       <button type="button" className="endAction endActionMint" disabled={mintBusy || scoreBusy || connectBusy} onClick={() => void onMintNft()}>
                         <span className="endActionIcon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m12 3 7 4v10l-7 4-7-4V7z"/><path d="m8.5 12 2.15 2.15L15.8 9"/></svg></span>
-                        <span className="endActionCopy"><strong>{mintBusy ? "Working…" : hasPendingMint ? "Retry storage" : "Mint as NFT"}</strong><small>{mintBusy && mintStage ? mintStage : "Collect this exact finish"}</small></span>
+                        <span className="endActionCopy">
+                          <strong>{mintBusy ? (mintStage === "Mint successful" ? "Mint successful" : mintTx ? "Confirming mint…" : "Minting…") : hasPendingMint ? "Finish NFT" : mintGatewayUrl ? "Minted" : "Mint as NFT"}</strong>
+                          <small>{mintBusy ? (mintStage === "Mint successful" ? "Transaction confirmed on Base" : mintTx ? "Waiting for Base confirmation" : "Confirm in your wallet") : hasPendingMint ? "Complete your collectible" : mintGatewayUrl ? "Mint successful on Base" : "Collect this exact finish"}</small>
+                        </span>
                         <span className="endActionArrow" aria-hidden="true">→</span>
                       </button>
                     </div>
                     {scoreTx || mintStage || actionErr ? <div className="endStatus" aria-live="polite">
-                      {scoreTx ? <span className="endStatusOk">✓ Score saved · {shortHash(scoreTx)}</span> : null}
-                      {mintStage ? <span className={mintGatewayUrl ? "endStatusOk" : ""}>{mintGatewayUrl ? "✓ " : ""}{mintStage}</span> : null}
+                      {scoreTx ? <span className={scoreConfirmed ? "endStatusOk" : ""}>{scoreConfirmed ? "✓ Score saved" : "Score submitted"} · {shortHash(scoreTx)}</span> : null}
+                      {mintStage && !mintTx ? <span>{mintStage}</span> : null}
                       {mintTx ? <a href={`https://basescan.org/tx/${mintTx}`} target="_blank" rel="noreferrer">BaseScan ↗</a> : null}
-                      {mintArtworkUrl ? <a href={mintArtworkUrl} target="_blank" rel="noreferrer">Artwork ↗</a> : null}
-                      {mintGatewayUrl ? <a href={mintGatewayUrl} target="_blank" rel="noreferrer">Metadata ↗</a> : null}
                       {mintOpenSeaUrl ? <a href={mintOpenSeaUrl} target="_blank" rel="noreferrer">OpenSea ↗</a> : null}
-                      {mintCollectionUrl ? <a href={mintCollectionUrl} target="_blank" rel="noreferrer">Collection ↗</a> : null}
                       {actionErr ? <span className="endStatusError">{actionErr}</span> : null}
                     </div> : null}
                   </div>
