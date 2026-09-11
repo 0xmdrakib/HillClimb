@@ -3,7 +3,6 @@ import {
   createFileEncoderStream,
   type Block,
 } from "ipfs-car";
-import { LIGHTHOUSE_DELIVERY_GATEWAY } from "@/lib/nftGateway";
 
 const IMAGE_WIDTH = 960;
 const IMAGE_HEIGHT = 540;
@@ -101,16 +100,15 @@ export async function buildRunNftPackage(input: RunNftPackageInput): Promise<Run
   const imageBlocks = await collectBlocks(createFileEncoderStream(imageFile));
   const imageRoot = imageBlocks.at(-1)!.cid;
   const imageCid = imageRoot.toString();
-  const imageGatewayUrl = `${LIGHTHOUSE_DELIVERY_GATEWAY}/${imageCid}`;
   const meters = Math.max(0, Math.floor(input.meters));
   const coins = Math.max(0, Math.floor(input.coins));
 
   const metadata = {
     name: `Jesse Hill Climb — ${meters}m Run`,
     description: "A hill-climb run captured at the finish on Base.",
-    // Use the project's paid content-addressed gateway for marketplace delivery.
-    // The canonical IPFS URI remains in properties.files below.
-    image: imageGatewayUrl,
+    // Keep immutable NFT data gateway-independent. Marketplaces resolve the CID
+    // through their own IPFS gateway while Lighthouse remains the pinning layer.
+    image: `ipfs://${imageCid}`,
     external_url: input.siteUrl,
     attributes: [
       { trait_type: "Distance", value: meters, display_type: "number" },
@@ -143,8 +141,6 @@ export async function buildRunNftPackage(input: RunNftPackageInput): Promise<Run
     carBytes: car.byteLength,
     imageBytes: imageBlob.size,
     rootCid: metadataCid,
-    // The URL remains immutable and content-addressed while using the paid
-    // Lighthouse delivery gateway configured for this project.
-    tokenUri: `${LIGHTHOUSE_DELIVERY_GATEWAY}/${metadataCid}`,
+    tokenUri: `ipfs://${metadataCid}`,
   };
 }

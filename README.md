@@ -64,7 +64,7 @@ After a run ends, players can connect a wallet and save their score to the deplo
 
 ### Run NFT minting
 
-The crash snapshot is compressed locally and packaged with OpenSea-compatible metadata before the wallet prompt. The package is uploaded through the protected server endpoint only after the mint transaction succeeds. The Lighthouse API key remains server-only.
+The crash snapshot is compressed locally and packaged with OpenSea-compatible metadata before the wallet prompt. The browser waits for the mint transaction to succeed, then the protected server independently verifies its exact event before storing either CID. Success is reported only after the metadata and image are read back byte-for-byte from public IPFS. Canonical metadata and image references use `ipfs://`; the Lighthouse API key remains server-only.
 
 ### Gasless support
 

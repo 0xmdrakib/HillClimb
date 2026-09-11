@@ -32,6 +32,10 @@ const MAX_BODY_BYTES = 1_200_000;
 const MAX_CAR_BYTES = 850_000;
 const MAX_IMAGE_BYTES = 650_000;
 const MAX_METADATA_BYTES = 12_000;
+const FINALIZE_DEADLINE_MS = 50_000;
+const RPC_TIMEOUT_MS = 5_000;
+const UPLOAD_TIMEOUT_MS = 12_000;
+const GATEWAY_TIMEOUT_MS = 2_500;
 const RESPONSE_HEADERS = { "cache-control": "no-store" } as const;
 
 const RATE_LIMIT = {
@@ -56,6 +60,16 @@ type JsonRecord = Record<string, unknown>;
 
 function jsonError(error: string, status: number) {
   return NextResponse.json({ error }, { status, headers: RESPONSE_HEADERS });
+}
+
+function jsonPending(error: string) {
+  return NextResponse.json({ ok: false, pending: true, error }, { status: 202, headers: RESPONSE_HEADERS });
+}
+
+function boundedTimeout(deadlineAt: number, maximumMs: number) {
+  const remaining = deadlineAt - Date.now() - 250;
+  if (remaining <= 0) throw new Error("finalize_deadline");
+  return Math.max(1, Math.min(maximumMs, remaining));
 }
 
 function sameOrigin(request: Request): boolean {
@@ -299,11 +313,18 @@ async function validateArchive(
     rootCids,
     isLegacyDirectoryPackage,
     deliveryGateway,
+    allowsPublicGateway: mint.tokenURI === `ipfs://${claimedRoot}`,
   };
 }
 
+function validateMintValues(meters: bigint, driverId: number, tokenURI: string, expectedTokenUri: string) {
+  if (tokenURI !== expectedTokenUri) throw new Error("token_uri_mismatch");
+  if (meters < 0n || meters > 100_000n) throw new Error("invalid_distance");
+  if (driverId !== 0 && driverId !== 1) throw new Error("invalid_driver");
+}
+
 async function verifyMintTransaction(rpcUrl: string, contract: Address, txHash: Hex, expectedTokenUri: string): Promise<MintEvent> {
-  const client = createPublicClient({ transport: http(rpcUrl, { timeout: 15_000 }) });
+  const client = createPublicClient({ transport: http(rpcUrl, { timeout: RPC_TIMEOUT_MS, retryCount: 0 }) });
   const receipt = await client.getTransactionReceipt({ hash: txHash });
   if (receipt.status !== "success") throw new Error("transaction_failed");
 
@@ -313,17 +334,21 @@ async function verifyMintTransaction(rpcUrl: string, contract: Address, txHash: 
       const decoded = decodeEventLog({ abi: runNftAbi, data: log.data, topics: log.topics });
       if (decoded.eventName !== "RunMinted") continue;
       const args = decoded.args as unknown as MintEvent;
-      if (args.tokenURI !== expectedTokenUri) throw new Error("token_uri_mismatch");
-      if (args.meters < 0n || args.meters > 100_000n) throw new Error("invalid_distance");
+      validateMintValues(args.meters, Number(args.driverId), args.tokenURI, expectedTokenUri);
       return args;
     } catch (error) {
-      if (error instanceof Error && ["token_uri_mismatch", "invalid_distance"].includes(error.message)) throw error;
+      if (error instanceof Error && ["token_uri_mismatch", "invalid_distance", "invalid_driver"].includes(error.message)) throw error;
     }
   }
   throw new Error("mint_event_not_found");
 }
 
-async function firstMatchingUrl(urls: string[], expectedBytes: Uint8Array, kind: "metadata" | "image") {
+async function firstMatchingUrl(
+  urls: string[],
+  expectedBytes: Uint8Array,
+  kind: "metadata" | "image",
+  deadlineAt: number,
+) {
   const matches = await Promise.all(urls.map(async (url) => {
     try {
       const response = await fetch(url, {
@@ -331,7 +356,7 @@ async function firstMatchingUrl(urls: string[], expectedBytes: Uint8Array, kind:
           accept: kind === "metadata" ? "application/json" : "image/jpeg,image/*",
         },
         cache: "no-store",
-        signal: AbortSignal.timeout(6_000),
+        signal: AbortSignal.timeout(boundedTimeout(deadlineAt, GATEWAY_TIMEOUT_MS)),
       });
       if (!response.ok) return null;
       const bytes = await readBinaryResponseWithLimit(response, expectedBytes.byteLength + 1);
@@ -348,19 +373,26 @@ async function waitForGatewayAssets(
   imageCid: string,
   metadataBytes: Uint8Array,
   imageBytes: Uint8Array,
+  allowPublicGateway: boolean,
   delays = [0, 750, 1_500, 3_000],
+  deadlineAt = Date.now() + 15_000,
 ) {
-  // Future tokenURI/image fields point to these exact paid-gateway URLs. Only clear
-  // the local recovery package after those same URLs serve the expected bytes.
-  const metadataCandidates = [`${gateway}/${metadataPath}`];
-  const imageCandidates = [`${gateway}/${imageCid}`];
+  // Canonical ipfs:// tokens must be retrievable from a public IPFS gateway,
+  // which is the same resolution model marketplaces use. Legacy HTTP tokens
+  // remain tied to their exact immutable paid-gateway URL.
+  const gateways = allowPublicGateway ? [LIGHTHOUSE_LEGACY_PUBLIC_GATEWAY] : [gateway];
   for (const delay of delays) {
+    if (Date.now() + delay + 300 >= deadlineAt) return null;
     if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
-    const [metadataUrl, artworkUrl] = await Promise.all([
-      firstMatchingUrl(metadataCandidates, metadataBytes, "metadata"),
-      firstMatchingUrl(imageCandidates, imageBytes, "image"),
-    ]);
-    if (metadataUrl && artworkUrl) return { metadataUrl, artworkUrl };
+    const matches = await Promise.all(gateways.map(async (candidate) => {
+      const [metadataUrl, artworkUrl] = await Promise.all([
+        firstMatchingUrl([`${candidate}/${metadataPath}`], metadataBytes, "metadata", deadlineAt),
+        firstMatchingUrl([`${candidate}/${imageCid}`], imageBytes, "image", deadlineAt),
+      ]);
+      return metadataUrl && artworkUrl ? { metadataUrl, artworkUrl } : null;
+    }));
+    const match = matches.find((assets): assets is { metadataUrl: string; artworkUrl: string } => Boolean(assets));
+    if (match) return match;
   }
   return null;
 }
@@ -375,7 +407,7 @@ async function queueOpenSeaRefresh(contract: Address, tokenId: bigint) {
         method: "POST",
         headers: { "x-api-key": apiKey, accept: "application/json" },
         cache: "no-store",
-        signal: AbortSignal.timeout(10_000),
+        signal: AbortSignal.timeout(4_000),
       },
     );
     // 409 means a refresh for the same token is already in OpenSea's queue.
@@ -391,7 +423,6 @@ function successPayload(
   assets: { metadataUrl: string; artworkUrl: string },
   alreadyStored: boolean,
   openSeaRefresh: "scheduled" | "queued" | "failed" | "not_configured",
-  availability: "verified" | "propagating" = "verified",
 ) {
   const tokenId = mint.tokenId.toString();
   return {
@@ -403,7 +434,7 @@ function successPayload(
     metadataUrl: assets.metadataUrl,
     artworkUrl: assets.artworkUrl,
     tokenId,
-    availability,
+    availability: "verified" as const,
     openSeaRefresh,
     openSeaUrl: `https://opensea.io/item/base/${contract}/${tokenId}`,
     collectionUrl: OPENSEA_COLLECTION_URL,
@@ -413,24 +444,9 @@ function successPayload(
 function scheduleMarketplaceFinalization(
   contract: Address,
   mint: MintEvent,
-  archive: Awaited<ReturnType<typeof validateArchive>>,
 ) {
   after(async () => {
-    try {
-      const assets = await waitForGatewayAssets(
-        archive.deliveryGateway,
-        archive.metadataPath,
-        archive.imageCid,
-        archive.metadataBytes,
-        archive.imageBytes,
-        [1_500],
-      );
-      if (!assets) return;
-      await queueOpenSeaRefresh(contract, mint.tokenId);
-    } catch {
-      // The upload has already been accepted under the exact onchain CIDs.
-      // Gateway propagation and marketplace refresh are best-effort follow-up.
-    }
+    await queueOpenSeaRefresh(contract, mint.tokenId);
   });
 }
 
@@ -458,7 +474,13 @@ function lighthouseHashes(responseText: string): string[] {
   return hashes;
 }
 
-async function uploadFiles(apiKey: string, files: UploadFile[], expectedRoot: string, wrapWithDirectory: boolean) {
+async function uploadFiles(
+  apiKey: string,
+  files: UploadFile[],
+  expectedRoot: string,
+  wrapWithDirectory: boolean,
+  deadlineAt: number,
+) {
   const formData = new FormData();
   for (const file of files) {
     const buffer = file.bytes.buffer.slice(file.bytes.byteOffset, file.bytes.byteOffset + file.bytes.byteLength) as ArrayBuffer;
@@ -477,7 +499,7 @@ async function uploadFiles(apiKey: string, files: UploadFile[], expectedRoot: st
     headers: { authorization: `Bearer ${apiKey}` },
     body: formData,
     cache: "no-store",
-    signal: AbortSignal.timeout(25_000),
+    signal: AbortSignal.timeout(boundedTimeout(deadlineAt, UPLOAD_TIMEOUT_MS)),
   });
   const responseText = await readResponseWithLimit(upstream, 64_000);
   if (!upstream.ok) throw new Error("lighthouse_upload_failed");
@@ -493,6 +515,7 @@ async function uploadFiles(apiKey: string, files: UploadFile[], expectedRoot: st
 }
 
 export async function POST(request: Request) {
+  const deadlineAt = Date.now() + FINALIZE_DEADLINE_MS;
   const limited = enforceRateLimit(request, RATE_LIMIT);
   if (limited) return limited;
   if (!sameOrigin(request)) return jsonError("forbidden_origin", 403);
@@ -529,14 +552,18 @@ export async function POST(request: Request) {
   const carBytes = base64ToBytes(String(body.carBase64 ?? ""));
   if (!carBytes) return jsonError("invalid_or_oversized_car", 413);
 
+  // Storage is deliberately gated behind a confirmed, successful RunMinted
+  // receipt. A rejected, cancelled, replaced, or reverted wallet transaction
+  // can therefore never consume Lighthouse storage.
   let mint: MintEvent;
   try { mint = await verifyMintTransaction(rpcUrl, contractValue, txHash, tokenUri); }
   catch (error) {
     const message = error instanceof Error ? error.message : "";
-    const reason = ["transaction_failed", "token_uri_mismatch", "invalid_distance", "mint_event_not_found"].includes(message)
-      ? message
-      : "transaction_not_confirmed";
-    return jsonError(reason, reason === "transaction_failed" ? 409 : 422);
+    if (message === "transaction_failed") return jsonError(message, 409);
+    if (["token_uri_mismatch", "invalid_distance", "invalid_driver", "mint_event_not_found"].includes(message)) {
+      return jsonError(message, 422);
+    }
+    return jsonPending("transaction_not_confirmed");
   }
 
   const requestOrigin = new URL(request.headers.get("origin")!).origin.replace(/\/$/, "");
@@ -545,58 +572,74 @@ export async function POST(request: Request) {
   try { archive = await validateArchive(carBytes, rootCid, mint, configuredSite); }
   catch { return jsonError("invalid_car_archive", 422); }
 
-  const isRetry = body.retry === true;
-  if (isRetry) {
-    const existingAssets = await waitForGatewayAssets(
+  // Probe first on every call. This makes retries idempotent even when an
+  // earlier upload completed but its response was interrupted.
+  let deliveryAssets = await waitForGatewayAssets(
+    archive.deliveryGateway,
+    archive.metadataPath,
+    archive.imageCid,
+    archive.metadataBytes,
+    archive.imageBytes,
+    archive.allowsPublicGateway,
+    [0],
+    deadlineAt,
+  );
+  const alreadyStored = Boolean(deliveryAssets);
+
+  if (!deliveryAssets) {
+    try {
+      const imageFile = { bytes: archive.imageBytes, name: "run.jpg", type: "image/jpeg" };
+      const metadataFile = { bytes: archive.metadataBytes, name: "metadata.json", type: "application/json" };
+      if (archive.isLegacyDirectoryPackage) {
+        await uploadFiles(apiKey, [imageFile, metadataFile], rootCid, true, deadlineAt);
+      } else {
+        // The token URI and image URI point to these exact raw file CIDs. Using
+        // Lighthouse's normal add endpoint stores the content itself; uploading
+        // a CAR here would only register a `carfile.car` record and leave these
+        // roots unavailable to gateways and marketplaces.
+        // Keep the proven flat two-CID structure. Store the artwork first and its
+        // metadata second, both under the same server-only Lighthouse account.
+        await uploadFiles(apiKey, [imageFile], archive.imageCid, false, deadlineAt);
+        await uploadFiles(apiKey, [metadataFile], rootCid, false, deadlineAt);
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "lighthouse_upload_failed";
+      if (
+        reason === "finalize_deadline" ||
+        (error instanceof Error && ["AbortError", "TimeoutError"].includes(error.name))
+      ) return jsonPending("nft_storage_pending");
+      return jsonError(
+        ["invalid_lighthouse_response", "lighthouse_cid_mismatch"].includes(reason) ? reason : "lighthouse_upload_failed",
+        502,
+      );
+    }
+  }
+
+  if (!deliveryAssets) {
+    deliveryAssets = await waitForGatewayAssets(
       archive.deliveryGateway,
       archive.metadataPath,
       archive.imageCid,
       archive.metadataBytes,
       archive.imageBytes,
-      [0],
-    );
-    if (existingAssets) {
-      const refreshState = (process.env.OPENSEA_API_KEY ?? "").trim() ? "scheduled" as const : "not_configured" as const;
-      scheduleMarketplaceFinalization(contractValue, mint, archive);
-      return NextResponse.json(successPayload(contractValue, mint, rootCid, tokenUri, existingAssets, true, refreshState), { headers: RESPONSE_HEADERS });
-    }
-  }
-
-  try {
-    const imageFile = { bytes: archive.imageBytes, name: "run.jpg", type: "image/jpeg" };
-    const metadataFile = { bytes: archive.metadataBytes, name: "metadata.json", type: "application/json" };
-    if (archive.isLegacyDirectoryPackage) {
-      await uploadFiles(apiKey, [imageFile, metadataFile], rootCid, true);
-    } else {
-      // The token URI and image URI point to these exact raw file CIDs. Using
-      // Lighthouse's normal add endpoint stores the content itself; uploading
-      // a CAR here would only register a `carfile.car` record and leave these
-      // roots unavailable to gateways and marketplaces.
-      // Keep the proven two-CID structure, but avoid concurrent Lighthouse
-      // writes racing each other on the paid gateway. Artwork is stored first;
-      // metadata, which references it, is stored second.
-      await uploadFiles(apiKey, [imageFile], archive.imageCid, false);
-      await uploadFiles(apiKey, [metadataFile], rootCid, false);
-    }
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : "lighthouse_upload_failed";
-    return jsonError(
-      ["invalid_lighthouse_response", "lighthouse_cid_mismatch"].includes(reason) ? reason : "lighthouse_upload_failed",
-      502,
+      archive.allowsPublicGateway,
+      [0, 500, 1_000, 2_000],
+      deadlineAt,
     );
   }
+  if (!deliveryAssets) return jsonPending("nft_storage_pending");
 
-  // Lighthouse returned the exact CIDs committed in the transaction. Gateway
-  // propagation can take longer than a serverless request and is not a failed
-  // mint or failed upload. Verify it and refresh OpenSea after responding.
-  scheduleMarketplaceFinalization(contractValue, mint, archive);
-  const deliveryAssets = {
-    metadataUrl: `${archive.deliveryGateway}/${archive.metadataPath}`,
-    artworkUrl: `${archive.deliveryGateway}/${archive.imageCid}`,
-  };
+  // A successful response now means both immutable files were fetched back and
+  // byte-verified. Only then refresh the marketplace and clear client pending data.
+  scheduleMarketplaceFinalization(contractValue, mint);
   const refreshState = (process.env.OPENSEA_API_KEY ?? "").trim() ? "scheduled" as const : "not_configured" as const;
-  return NextResponse.json(
-    successPayload(contractValue, mint, rootCid, tokenUri, deliveryAssets, false, refreshState, "propagating"),
-    { headers: RESPONSE_HEADERS },
-  );
+  return NextResponse.json(successPayload(
+    contractValue,
+    mint,
+    rootCid,
+    tokenUri,
+    deliveryAssets,
+    alreadyStored,
+    refreshState,
+  ), { headers: RESPONSE_HEADERS });
 }

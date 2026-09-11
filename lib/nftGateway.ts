@@ -9,7 +9,7 @@ function normalizedHttpsGateway(value: string | undefined): string {
   return DEFAULT_LIGHTHOUSE_DELIVERY_GATEWAY;
 }
 
-/** Public, non-secret paid gateway used in immutable NFT metadata URLs. */
+/** Public, non-secret paid gateway used for retrieval checks and user links. */
 export const LIGHTHOUSE_DELIVERY_GATEWAY = normalizedHttpsGateway(
   process.env.NEXT_PUBLIC_LIGHTHOUSE_GATEWAY_URL,
 );

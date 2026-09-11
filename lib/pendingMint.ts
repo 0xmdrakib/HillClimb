@@ -7,7 +7,6 @@ const DATABASE_NAME = "jesse-hill-climb";
 const DATABASE_VERSION = 1;
 const STORE_NAME = "pending-nft";
 const RECORD_KEY = "latest";
-const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
 const MAX_PENDING_MINTS = 12;
 
 export type PendingRunMint = {
@@ -56,7 +55,6 @@ function isValidPending(value: unknown): value is PendingRunMint {
     pending?.version === 1 &&
     Number.isFinite(pending.savedAt) &&
     Date.now() - pending.savedAt >= 0 &&
-    Date.now() - pending.savedAt <= MAX_AGE_MS &&
     /^0x[0-9a-fA-F]{64}$/.test(pending.txHash) &&
     /^b[a-z2-7]{40,100}$/.test(nftPackage?.rootCid ?? "") &&
     validTokenUri &&

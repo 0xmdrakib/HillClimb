@@ -304,14 +304,19 @@ export async function mintRunNft(
   return String(hash);
 }
 
-export async function waitForBaseTransaction(transactionHash: string): Promise<void> {
+export async function waitForBaseTransaction(transactionHash: string): Promise<string> {
+  let replacementReason: "cancelled" | "replaced" | "repriced" | null = null;
   const receipt = await publicClient.waitForTransactionReceipt({
     hash: transactionHash as `0x${string}`,
     confirmations: 1,
     pollingInterval: 1_200,
     timeout: 180_000,
+    onReplaced: ({ reason }) => { replacementReason = reason; },
   });
-  if (receipt.status !== "success") throw new TransactionRevertedError();
+  if (receipt.status !== "success" || replacementReason === "cancelled" || replacementReason === "replaced") {
+    throw new TransactionRevertedError();
+  }
+  return receipt.transactionHash;
 }
 
 export class TransactionRevertedError extends Error {

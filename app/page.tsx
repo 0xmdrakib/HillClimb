@@ -66,9 +66,16 @@ class MintStorageError extends Error {
     this.name = "MintStorageError";
   }
 }
+type MintFinalizeResponse = {
+  ok?: boolean;
+  error?: string;
+  metadataUrl?: string;
+  gatewayUrl?: string;
+  openSeaUrl?: string;
+};
 function humanizeTxErr(err: any) {
   if (err instanceof MintStorageError) {
-    return "Your NFT is minted. Tap Finish NFT to complete its artwork.";
+    return "NFT finalization is still pending — retry is safe.";
   }
   const e = err?.cause ?? err;
   const code = e?.code ?? e?.cause?.code;
@@ -254,6 +261,7 @@ export default function Page() {
   const walletRef = useRef<{ provider: Eip1193Provider; address: Address } | null>(null);
   const pendingMintRef = useRef<{ package: RunNftPackage; txHash: string } | null>(null);
   const mintVerificationRunsRef = useRef<Map<string, number>>(new Map());
+  const mintFinalizeRequestsRef = useRef<Map<string, Promise<MintFinalizeResponse>>>(new Map());
 
   useEffect(() => {
     if (gamePhase === "menu") audioManager.suspend();
@@ -509,11 +517,11 @@ export default function Page() {
     const runs = mintVerificationRunsRef.current;
     const runId = (runs.get(pending.txHash) ?? 0) + 1;
     runs.set(pending.txHash, runId);
-    for (const delay of [15_000, 45_000]) {
+    for (const delay of [3_000, 15_000, 45_000]) {
       await new Promise((resolve) => window.setTimeout(resolve, delay));
       if (runs.get(pending.txHash) !== runId) return;
       try {
-        if (await finalizeMintStorage(pending, true, { receiptConfirmed: true, silent: true, scheduleRetry: false })) return;
+        if (await finalizeMintStorage(pending, true, { silent: true })) return;
       } catch (error) {
         if (error instanceof TransactionRevertedError) {
           if (pendingMintRef.current?.txHash === pending.txHash) {
@@ -528,31 +536,71 @@ export default function Page() {
     }
   }
 
+  async function requestMintFinalization(
+    pending: { package: RunNftPackage; txHash: string },
+    retry: boolean,
+  ): Promise<MintFinalizeResponse> {
+    const key = pending.txHash.toLowerCase();
+    const existing = mintFinalizeRequestsRef.current.get(key);
+    if (existing) return existing;
+
+    const request = (async () => {
+      let response: Response;
+      try {
+        response = await fetch("/api/nft/finalize", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            txHash: pending.txHash,
+            rootCid: pending.package.rootCid,
+            tokenUri: pending.package.tokenUri,
+            carBase64: pending.package.carBase64,
+            retry,
+          }),
+        });
+      } catch {
+        throw new MintStorageError("storage_request_failed");
+      }
+      const result = await response.json().catch(() => null) as MintFinalizeResponse | null;
+      if (!response.ok || !result?.ok) {
+        const reason = String(result?.error || "nft_storage_failed");
+        if (reason === "transaction_failed") throw new TransactionRevertedError();
+        throw new MintStorageError(reason);
+      }
+      return result;
+    })();
+
+    mintFinalizeRequestsRef.current.set(key, request);
+    void request.finally(() => {
+      if (mintFinalizeRequestsRef.current.get(key) === request) mintFinalizeRequestsRef.current.delete(key);
+    }).catch(() => undefined);
+    return request;
+  }
+
   async function finalizeMintStorage(
     pending: { package: RunNftPackage; txHash: string },
     retry = false,
-    options: { receiptConfirmed?: boolean; silent?: boolean; scheduleRetry?: boolean } = {},
+    options: { silent?: boolean } = {},
   ): Promise<boolean> {
-    if (!options.receiptConfirmed) await waitForBaseTransaction(pending.txHash);
-    if (!options.silent) setMintStage("Mint successful");
-    let response: Response;
-    try {
-      response = await fetch("/api/nft/finalize", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          txHash: pending.txHash,
-          rootCid: pending.package.rootCid,
-          tokenUri: pending.package.tokenUri,
-          carBase64: pending.package.carBase64,
-          retry,
-        }),
-      });
-    } catch {
-      throw new MintStorageError("storage_request_failed");
+    if (!options.silent) setMintStage("Confirming mint…");
+    const confirmedTxHash = await waitForBaseTransaction(pending.txHash);
+    let confirmedPending = pending;
+    if (confirmedTxHash.toLowerCase() !== pending.txHash.toLowerCase()) {
+      confirmedPending = { package: pending.package, txHash: confirmedTxHash };
+      const wasActive = pendingMintRef.current?.txHash === pending.txHash;
+      if (wasActive) {
+        pendingMintRef.current = confirmedPending;
+        setMintTx(confirmedTxHash);
+      }
+      try {
+        await savePendingRunMint(confirmedPending);
+        await removePendingRunMint(pending.txHash);
+      } catch (error) {
+        console.error("Could not persist replacement NFT transaction", error);
+      }
     }
-    const result = await response.json().catch(() => null);
-    if (!response.ok || !result?.ok) throw new MintStorageError(String(result?.error || "nft_storage_failed"));
+    if (!options.silent) setMintStage("Finalizing NFT…");
+    const result = await requestMintFinalization(confirmedPending, retry);
     if (!options.silent) {
       setMintGatewayUrl(String(result.metadataUrl || result.gatewayUrl));
       setMintOpenSeaUrl(result.openSeaUrl ? String(result.openSeaUrl) : null);
@@ -560,21 +608,23 @@ export default function Page() {
       setHasPendingMint(false);
     }
 
-    const verified = result.availability !== "propagating";
-    if (verified) {
-      const wasActive = pendingMintRef.current?.txHash === pending.txHash;
-      if (wasActive) pendingMintRef.current = null;
-      mintVerificationRunsRef.current.delete(pending.txHash);
-      if (wasActive || !options.silent) setHasPendingMint(false);
-      await removePendingRunMint(pending.txHash).catch(() => undefined);
-      return true;
+    const wasActive = pendingMintRef.current?.txHash === confirmedPending.txHash;
+    if (wasActive) {
+      pendingMintRef.current = null;
+      if (options.silent) {
+        setMintGatewayUrl(String(result.metadataUrl || result.gatewayUrl));
+        setMintOpenSeaUrl(result.openSeaUrl ? String(result.openSeaUrl) : null);
+        setMintStage("Mint successful");
+      }
     }
-
-    // The exact CIDs were accepted by Lighthouse, so the mint is successful.
-    // Keep the local CAR until a gateway byte-check succeeds, and retry quietly.
-    if (pendingMintRef.current?.txHash === pending.txHash) pendingMintRef.current = null;
-    if (options.scheduleRetry !== false) void silentlyVerifyMint(pending);
-    return false;
+    mintVerificationRunsRef.current.delete(pending.txHash);
+    mintVerificationRunsRef.current.delete(confirmedPending.txHash);
+    if (wasActive || !options.silent) setHasPendingMint(false);
+    await Promise.all([
+      removePendingRunMint(pending.txHash),
+      confirmedPending.txHash === pending.txHash ? Promise.resolve() : removePendingRunMint(confirmedPending.txHash),
+    ]).catch(() => undefined);
+    return true;
   }
 
   const onMintNft = async () => {
@@ -617,9 +667,16 @@ export default function Page() {
       const pending = { package: nftPackage, txHash };
       pendingMintRef.current = pending;
       setHasPendingMint(true);
-      await savePendingRunMint(pending).catch(() => undefined);
+      const persistence = savePendingRunMint(pending);
       setMintTx(txHash);
       setMintStage("Confirming mint…");
+      void persistence.then(async () => {
+        // If verification completed before IndexedDB finished, remove the late
+        // write so a successful mint is never resurrected as pending on reload.
+        if (pendingMintRef.current?.txHash !== txHash) {
+          await removePendingRunMint(txHash).catch(() => undefined);
+        }
+      }).catch((error) => console.error("Could not persist pending NFT", error));
       await finalizeMintStorage(pending);
     } catch (error: unknown) {
       const message = humanizeTxErr(error);
@@ -632,10 +689,14 @@ export default function Page() {
           await removePendingRunMint(revertedTxHash).catch(() => undefined);
         }
       }
-      if (error instanceof MintStorageError && pendingMintRef.current) {
-        console.error("NFT finalization failed", { reason: error.reason, txHash: pendingMintRef.current.txHash });
+      if (!(error instanceof TransactionRevertedError) && pendingMintRef.current) {
+        console.error("NFT finalization is pending", {
+          reason: error instanceof MintStorageError ? error.reason : message,
+          txHash: pendingMintRef.current.txHash,
+        });
         setActionErr("");
-        setMintStage("Mint successful");
+        setMintStage("");
+        void silentlyVerifyMint(pendingMintRef.current);
       } else {
         setActionErr(message);
         setMintStage("");
@@ -652,6 +713,12 @@ export default function Page() {
       for (let pass = 0; pass < 2; pass += 1) {
         const pendings = await loadPendingRunMints();
         if (!pendings.length) return;
+        if (active && !pendingMintRef.current) {
+          const latestPending = pendings.at(-1)!;
+          pendingMintRef.current = latestPending;
+          setHasPendingMint(true);
+          setMintTx(latestPending.txHash);
+        }
         for (const pending of pendings) {
           if (!firstRequest) {
             await new Promise((resolve) => window.setTimeout(resolve, 21_000));
@@ -659,11 +726,16 @@ export default function Page() {
           }
           firstRequest = false;
           try {
-            await finalizeMintStorage(pending, true, { silent: true, scheduleRetry: false });
+            await finalizeMintStorage(pending, true, { silent: true });
           } catch (error) {
             if (!active) return;
             if (error instanceof TransactionRevertedError) {
               mintVerificationRunsRef.current.delete(pending.txHash);
+              if (pendingMintRef.current?.txHash === pending.txHash) {
+                pendingMintRef.current = null;
+                setHasPendingMint(false);
+                setMintTx(null);
+              }
               await removePendingRunMint(pending.txHash).catch(() => undefined);
             }
           }
@@ -909,8 +981,8 @@ export default function Page() {
                       <button type="button" className="endAction endActionMint" disabled={mintBusy || scoreBusy || connectBusy} onClick={() => void onMintNft()}>
                         <span className="endActionIcon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m12 3 7 4v10l-7 4-7-4V7z"/><path d="m8.5 12 2.15 2.15L15.8 9"/></svg></span>
                         <span className="endActionCopy">
-                          <strong>{mintBusy ? (mintStage === "Mint successful" ? "Mint successful" : mintTx ? "Confirming mint…" : "Minting…") : hasPendingMint ? "Finish NFT" : mintGatewayUrl ? "Minted" : "Mint as NFT"}</strong>
-                          <small>{mintBusy ? (mintStage === "Mint successful" ? "Transaction confirmed on Base" : mintTx ? "Waiting for Base confirmation" : "Confirm in your wallet") : hasPendingMint ? "Complete your collectible" : mintGatewayUrl ? "Mint successful on Base" : "Collect this exact finish"}</small>
+                          <strong>{mintBusy ? (mintStage || (mintTx ? "Confirming mint…" : "Minting…")) : hasPendingMint ? "Finish NFT" : mintGatewayUrl ? "Minted" : "Mint as NFT"}</strong>
+                          <small>{mintBusy ? (mintStage === "Mint successful" ? "Collectible ready" : mintStage === "Finalizing NFT…" ? "Securing your collectible" : mintTx ? "Waiting for Base confirmation" : "Confirm in your wallet") : hasPendingMint ? "Complete your collectible" : mintGatewayUrl ? "Mint successful on Base" : "Collect this exact finish"}</small>
                         </span>
                         <span className="endActionArrow" aria-hidden="true">→</span>
                       </button>
