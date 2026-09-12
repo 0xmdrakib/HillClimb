@@ -34,7 +34,7 @@ const ROUTE_PATH = path.join(PROJECT_ROOT, "app", "api", "nft", "finalize", "rou
 const CONTRACT = "0x1111111111111111111111111111111111111111";
 const PLAYER = "0x2222222222222222222222222222222222222222";
 const SITE_URL = "https://game.example";
-const PAID_GATEWAY = "https://paid.example/ipfs";
+const PAID_GATEWAY = "https://paid-test.lighthouseweb3.xyz/ipfs";
 const PUBLIC_GATEWAY = "https://gateway.lighthouse.storage/ipfs";
 const UPLOAD_URL = "https://upload.lighthouse.storage/api/v0/add";
 const FileCtor = globalThis.File ?? NodeFile;
@@ -142,10 +142,13 @@ function createHarness() {
   const state = {
     afterTasks: [],
     gatewayMode: { paid: "exact", public: "unavailable" },
+    gatewayMimeOverride: {},
     gatewayRequests: [],
+    networkEvents: [],
     mismatchNextUpload: false,
     receipts: new Map(),
     uploaded: new Map(),
+    uploadedTypes: new Map(),
     uploads: [],
   };
 
@@ -158,7 +161,7 @@ function createHarness() {
     OPENSEA_API_KEY: "",
   };
 
-  function gatewayResponse(url) {
+  function gatewayResponse(url, init) {
     const gateway = url.startsWith(`${PUBLIC_GATEWAY}/`)
       ? "public"
       : url.startsWith(`${PAID_GATEWAY}/`)
@@ -166,17 +169,27 @@ function createHarness() {
         : null;
     if (!gateway) return null;
     state.gatewayRequests.push(url);
+    state.networkEvents.push({ kind: "gateway", url, redirect: init.redirect });
     const mode = state.gatewayMode[gateway];
     const prefix = gateway === "public" ? `${PUBLIC_GATEWAY}/` : `${PAID_GATEWAY}/`;
     const key = url.slice(prefix.length);
     const bytes = state.uploaded.get(key);
     if (!bytes || mode === "unavailable") return new Response("missing", { status: 404 });
+    const storedType = state.uploadedTypes.get(key);
+    const type = state.gatewayMimeOverride[storedType] ?? storedType;
+    const headers = { "content-type": type };
+    if (mode === "redirect") {
+      // Model fetch's redirect:error behavior. A caller that follows redirects
+      // would receive valid bytes from an unapproved host and fail our tests.
+      if (init.redirect === "error") throw new TypeError("fetch failed: unexpected redirect");
+      return new Response(bytes, { status: 200, headers });
+    }
     if (mode === "wrong") {
       const wrong = bytes.slice();
       wrong[0] ^= 0xff;
-      return new Response(wrong, { status: 200 });
+      return new Response(wrong, { status: 200, headers });
     }
-    if (mode === "exact") return new Response(bytes, { status: 200 });
+    if (mode === "exact") return new Response(bytes, { status: 200, headers });
     throw new Error(`Unknown ${gateway} gateway mode: ${mode}`);
   }
 
@@ -194,10 +207,18 @@ function createHarness() {
       const files = init.body.getAll("file");
       assert.equal(files.length, 1, "flat packages upload one immutable file per request");
       const file = files[0];
+      state.networkEvents.push({ kind: "upload", name: file.name, redirect: init.redirect });
       const bytes = new Uint8Array(await file.arrayBuffer());
       const encoded = await encodeFile(bytes, file.name, file.type);
-      state.uploads.push({ bytes, cid: encoded.cid, name: file.name });
+      const headers = new Headers(init.headers);
+      state.uploads.push({
+        bytes,
+        cid: encoded.cid,
+        name: file.name,
+        storageType: headers.get("x-storage-type"),
+      });
       state.uploaded.set(encoded.cid, bytes);
+      state.uploadedTypes.set(encoded.cid, file.type);
       let returnedCid = encoded.cid;
       if (state.mismatchNextUpload) {
         state.mismatchNextUpload = false;
@@ -206,7 +227,7 @@ function createHarness() {
       return Response.json({ Hash: returnedCid });
     }
 
-    const gateway = gatewayResponse(url);
+    const gateway = gatewayResponse(url, init);
     if (gateway) return gateway;
     throw new Error(`Unexpected external fetch in hermetic test: ${url}`);
   }
@@ -308,10 +329,13 @@ function createHarness() {
   function reset() {
     state.afterTasks.length = 0;
     state.gatewayMode = { paid: "exact", public: "unavailable" };
+    state.gatewayMimeOverride = {};
     state.gatewayRequests.length = 0;
+    state.networkEvents.length = 0;
     state.mismatchNextUpload = false;
     state.receipts.clear();
     state.uploaded.clear();
+    state.uploadedTypes.clear();
     state.uploads.length = 0;
   }
 
@@ -375,19 +399,127 @@ test("NFT finalizer route hermetic regression suite", async (t) => {
 
       assert.equal(response.status, 200);
       assert.equal(body.ok, true);
+      assert.equal(body.alreadyStored, false);
       assert.equal(body.rootCid, nftPackage.rootCid);
       assert.equal(body.tokenUri, `${PAID_GATEWAY}/${nftPackage.rootCid}`);
       assert.equal(body.metadataUrl, `${PAID_GATEWAY}/${nftPackage.rootCid}`);
       assert.equal(body.artworkUrl, `${PAID_GATEWAY}/${nftPackage.imageCid}`);
       assert.deepEqual(harness.state.uploads.map((upload) => upload.name), ["run.jpg", "metadata.json"]);
       assert.deepEqual(harness.state.uploads.map((upload) => upload.cid), [nftPackage.imageCid, nftPackage.rootCid]);
+      assert.deepEqual(
+        harness.state.uploads.map((upload) => upload.storageType),
+        ["annual", "annual"],
+        "both artwork and metadata must use the paid Lighthouse storage plan",
+      );
       assert.deepEqual(harness.state.uploads[0].bytes, nftPackage.imageBytes);
       assert.deepEqual(harness.state.uploads[1].bytes, nftPackage.metadataBytes);
+      assert.deepEqual(
+        harness.state.networkEvents.slice(0, 2).map(({ kind, name }) => ({ kind, name })),
+        [{ kind: "upload", name: "run.jpg" }, { kind: "upload", name: "metadata.json" }],
+        "a fresh finalization must store both files before its first paid gateway GET",
+      );
+      assert.ok(
+        harness.state.networkEvents.every((event) => event.redirect === "error"),
+        "upload and paid delivery requests must reject redirects",
+      );
       assert.ok(harness.state.gatewayRequests.length > 0);
       assert.ok(harness.state.gatewayRequests.every((url) => url.startsWith(`${PAID_GATEWAY}/`)));
       assert.equal(harness.state.gatewayRequests.some((url) => url.startsWith(`${PUBLIC_GATEWAY}/`)), false);
     });
   }
+
+  await t.test("explicit retry verifies exact paid files without uploading them again", async () => {
+    harness.reset();
+    const nftPackage = await buildFlatPackage({ terrain: "Desert", meters: 420, seed: 20 });
+    const txHash = transactionHash(210);
+    harness.state.receipts.set(txHash, harness.receiptFor(nftPackage, 19n));
+    harness.state.uploaded.set(nftPackage.imageCid, nftPackage.imageBytes);
+    harness.state.uploaded.set(nftPackage.rootCid, nftPackage.metadataBytes);
+    harness.state.uploadedTypes.set(nftPackage.imageCid, "image/jpeg");
+    harness.state.uploadedTypes.set(nftPackage.rootCid, "application/json");
+
+    const { body, response } = await harness.invoke(nftPackage, txHash, { retry: true });
+
+    assert.equal(response.status, 200);
+    assert.equal(body.ok, true);
+    assert.equal(body.alreadyStored, true);
+    assert.equal(body.availability, "verified");
+    assert.equal(harness.state.uploads.length, 0);
+    assert.equal(harness.state.gatewayRequests.length, 2);
+    assert.ok(harness.state.networkEvents.every((event) => event.kind === "gateway" && event.redirect === "error"));
+  });
+
+  await t.test("explicit retry uploads when its paid files are missing", async () => {
+    harness.reset();
+    const nftPackage = await buildFlatPackage({ terrain: "Moon", meters: 421, seed: 21 });
+    const txHash = transactionHash(211);
+    harness.state.receipts.set(txHash, harness.receiptFor(nftPackage, 20n));
+
+    const { body, response } = await harness.invoke(nftPackage, txHash, { retry: true });
+
+    assert.equal(response.status, 200);
+    assert.equal(body.ok, true);
+    assert.equal(body.alreadyStored, false);
+    assert.deepEqual(harness.state.networkEvents.slice(0, 2).map((event) => event.kind), ["gateway", "gateway"]);
+    assert.deepEqual(harness.state.uploads.map((upload) => upload.name), ["run.jpg", "metadata.json"]);
+    assert.deepEqual(harness.state.uploads.map((upload) => upload.storageType), ["annual", "annual"]);
+  });
+
+  for (const [index, [fileType, wrongType]] of [
+    ["application/json", "text/html"],
+    ["image/jpeg", "image/png"],
+    ["application/json", ""],
+    ["image/jpeg", ""],
+  ].entries()) {
+    await t.test(`exact ${fileType} bytes served as ${wrongType || "missing MIME"} cannot report success`, async () => {
+      harness.reset();
+      const nftPackage = await buildFlatPackage({ terrain: maps[index], meters: 430 + index, seed: 22 + index });
+      const txHash = transactionHash(212 + index);
+      harness.state.receipts.set(txHash, harness.receiptFor(nftPackage, BigInt(21 + index)));
+      harness.state.gatewayMimeOverride[fileType] = wrongType;
+
+      const { body, response } = await harness.invoke(nftPackage, txHash);
+
+      assert.equal(response.status, 202);
+      assert.deepEqual(body, { ok: false, pending: true, error: "nft_storage_pending" });
+      assert.equal(harness.state.uploads.length, 2);
+      assert.equal(harness.state.afterTasks.length, 0, "unverified content must not trigger marketplace finalization");
+    });
+  }
+
+  await t.test("valid MIME parameters do not reject exact paid JSON and JPEG", async () => {
+    harness.reset();
+    const nftPackage = await buildFlatPackage({ terrain: "Countryside", meters: 435, seed: 27 });
+    const txHash = transactionHash(217);
+    harness.state.receipts.set(txHash, harness.receiptFor(nftPackage, 26n));
+    harness.state.gatewayMimeOverride = {
+      "application/json": "application/json; charset=utf-8",
+      "image/jpeg": "image/jpeg; charset=binary",
+    };
+
+    const { body, response } = await harness.invoke(nftPackage, txHash);
+
+    assert.equal(response.status, 200);
+    assert.equal(body.ok, true);
+    assert.equal(body.availability, "verified");
+  });
+
+  await t.test("paid gateway redirects cannot make unapproved-host bytes verified", async () => {
+    harness.reset();
+    const nftPackage = await buildFlatPackage({ terrain: "Arctic", meters: 434, seed: 26 });
+    const txHash = transactionHash(216);
+    harness.state.receipts.set(txHash, harness.receiptFor(nftPackage, 25n));
+    harness.state.gatewayMode.paid = "redirect";
+
+    const { body, response } = await harness.invoke(nftPackage, txHash);
+
+    assert.equal(response.status, 202);
+    assert.deepEqual(body, { ok: false, pending: true, error: "nft_storage_pending" });
+    assert.equal(harness.state.uploads.length, 2);
+    assert.ok(harness.state.gatewayRequests.length > 0);
+    assert.ok(harness.state.networkEvents.every((event) => event.redirect === "error"));
+    assert.equal(harness.state.afterTasks.length, 0);
+  });
 
   await t.test("unconfirmed receipt returns pending and uploads nothing", async () => {
     harness.reset();
@@ -477,6 +609,12 @@ test("NFT finalizer route hermetic regression suite", async (t) => {
       assert.equal(response.status, 202);
       assert.deepEqual(body, { ok: false, pending: true, error: "nft_storage_pending" });
       assert.deepEqual(harness.state.uploads.map((upload) => upload.name), ["run.jpg", "metadata.json"]);
+      assert.deepEqual(harness.state.uploads.map((upload) => upload.storageType), ["annual", "annual"]);
+      assert.deepEqual(
+        harness.state.uploads.map((upload) => upload.cid),
+        [nftPackage.imageCid, nftPackage.rootCid],
+        "accepted upload CIDs must not count as success while paid delivery is unavailable",
+      );
       assert.ok(harness.state.gatewayRequests.every((url) => url.startsWith(`${PAID_GATEWAY}/`)));
       assert.equal(harness.state.gatewayRequests.some((url) => url.startsWith(`${PUBLIC_GATEWAY}/`)), false);
     });

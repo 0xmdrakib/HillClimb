@@ -347,13 +347,19 @@ async function firstMatchingUrl(
         headers: {
           accept: kind === "metadata" ? "application/json" : "image/jpeg,image/*",
         },
+        redirect: "error",
         cache: "no-store",
         signal: AbortSignal.timeout(boundedTimeout(deadlineAt, GATEWAY_TIMEOUT_MS)),
       });
-      if (!response.ok) return null;
+      const contentType = response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
+      const expectedType = kind === "metadata" ? "application/json" : "image/jpeg";
+      if (!response.ok || contentType !== expectedType) {
+        await response.body?.cancel().catch(() => undefined);
+        return null;
+      }
       const bytes = await readBinaryResponseWithLimit(response, expectedBytes.byteLength + 1);
       return equalBytes(bytes, expectedBytes) ? url : null;
-    } catch { /* Try the next gateway. */ }
+    } catch { /* Paid delivery has not been verified. */ }
     return null;
   }));
   return matches.find((url): url is string => Boolean(url)) ?? null;
@@ -481,8 +487,14 @@ async function uploadFiles(
   });
   const upstream = await fetch(`${LIGHTHOUSE_FILE_UPLOAD_URL}?${params.toString()}`, {
     method: "POST",
-    headers: { authorization: `Bearer ${apiKey}` },
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+      // Match Lighthouse's paid Filecoin uploader. The API key identifies the
+      // account; this header selects its subscription storage for both files.
+      "X-Storage-Type": "annual",
+    },
     body: formData,
+    redirect: "error",
     cache: "no-store",
     signal: AbortSignal.timeout(boundedTimeout(deadlineAt, UPLOAD_TIMEOUT_MS)),
   });
@@ -568,17 +580,20 @@ export async function POST(request: Request) {
   try { archive = await validateArchive(carBytes, rootCid, mint, configuredSite); }
   catch { return jsonError("invalid_car_archive", 422); }
 
-  // Probe first on every call. This makes retries idempotent even when an
-  // earlier upload completed but its response was interrupted.
-  let deliveryAssets = await waitForGatewayAssets(
-    archive.deliveryGateway,
-    archive.metadataPath,
-    archive.imageCid,
-    archive.metadataBytes,
-    archive.imageBytes,
-    [0],
-    deadlineAt,
-  );
+  // After receipt verification, keep the known-working upload-before-probe path
+  // for a fresh request. Do not request potentially unpinned CIDs before this
+  // upload. A retry first checks whether an earlier upload already completed.
+  let deliveryAssets = body.retry === true
+    ? await waitForGatewayAssets(
+      archive.deliveryGateway,
+      archive.metadataPath,
+      archive.imageCid,
+      archive.metadataBytes,
+      archive.imageBytes,
+      [0],
+      deadlineAt,
+    )
+    : null;
   const alreadyStored = Boolean(deliveryAssets);
 
   if (!deliveryAssets) {

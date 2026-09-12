@@ -25,7 +25,8 @@ import ts from "typescript";
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PACKAGE_PATH = path.join(PROJECT_ROOT, "lib", "nftPackage.ts");
-const PAID_GATEWAY = "https://paid-delivery.example/ipfs";
+const PAID_GATEWAY = "https://paid-test.lighthouseweb3.xyz/ipfs";
+const DEFAULT_PAID_GATEWAY = "https://protective-walrus-h5noy.lighthouseweb3.xyz/ipfs";
 const FileCtor = globalThis.File ?? NodeFile;
 const MAPS = ["Countryside", "Desert", "Arctic", "Moon"];
 
@@ -43,7 +44,7 @@ const JPEG_BYTES = Uint8Array.from([
   0xff, 0xd9,
 ]);
 
-function createHarness() {
+function createHarness(gatewayValue = PAID_GATEWAY) {
   const state = {
     canvases: [],
     dataFetches: [],
@@ -164,7 +165,7 @@ function createHarness() {
     document,
     fetch: mockedFetch,
     process: {
-      env: { NEXT_PUBLIC_LIGHTHOUSE_GATEWAY_URL: PAID_GATEWAY },
+      env: { NEXT_PUBLIC_LIGHTHOUSE_GATEWAY_URL: gatewayValue },
     },
   });
   const moduleCache = new Map();
@@ -217,6 +218,7 @@ function createHarness() {
 
   return {
     buildRunNftPackage: loadTypeScriptModule(PACKAGE_PATH).buildRunNftPackage,
+    deliveryGateway: loadTypeScriptModule(path.join(PROJECT_ROOT, "lib", "nftGateway.ts")).LIGHTHOUSE_DELIVERY_GATEWAY,
     state,
   };
 }
@@ -303,4 +305,79 @@ test("actual NFT package builder emits paid URLs, canonical provenance, and uncr
   assert.equal(harness.state.dataFetches.length, MAPS.length);
   assert.equal(harness.state.httpRequests.length, 0, "local package creation must perform zero uploads");
   assert.deepEqual(harness.state.objectUrlsRevoked, harness.state.objectUrlsCreated);
+});
+
+test("gateway configuration cannot write an unapproved primary NFT delivery URL", async (t) => {
+  const invalidConfigurations = [
+    ["empty", ""],
+    ["whitespace", "   "],
+    ["malformed", "not a URL"],
+    ["HTTP paid host", "http://paid-test.lighthouseweb3.xyz/ipfs"],
+    ["foreign HTTP host", "http://foreign.example/ipfs"],
+    ["foreign HTTPS host", "https://foreign.example/ipfs"],
+    ["provider's non-subscription host", "https://gateway.lighthouse.storage/ipfs"],
+    ["hostname suffix spoof", "https://paid-test.lighthouseweb3.xyz.foreign.example/ipfs"],
+    ["hostname without subdomain", "https://lighthouseweb3.xyz/ipfs"],
+    ["empty subdomain label", "https://.lighthouseweb3.xyz/ipfs"],
+    ["double dot in hostname", "https://paid-test..lighthouseweb3.xyz/ipfs"],
+    ["leading subdomain hyphen", "https://-paid-test.lighthouseweb3.xyz/ipfs"],
+    ["trailing subdomain hyphen", "https://paid-test-.lighthouseweb3.xyz/ipfs"],
+    ["subdomain underscore", "https://paid_test.lighthouseweb3.xyz/ipfs"],
+    ["overlong subdomain label", `https://${"a".repeat(64)}.lighthouseweb3.xyz/ipfs`],
+    ["nested subdomain labels", "https://nested.paid-test.lighthouseweb3.xyz/ipfs"],
+    ["username", "https://test-user@paid-test.lighthouseweb3.xyz/ipfs"],
+    ["username and password", "https://test-user:test-password@paid-test.lighthouseweb3.xyz/ipfs"],
+    ["query", "https://paid-test.lighthouseweb3.xyz/ipfs?download=true"],
+    ["fragment", "https://paid-test.lighthouseweb3.xyz/ipfs#image"],
+    ["bare query delimiter", "https://paid-test.lighthouseweb3.xyz/ipfs?"],
+    ["bare fragment delimiter", "https://paid-test.lighthouseweb3.xyz/ipfs#"],
+    ["root path", "https://paid-test.lighthouseweb3.xyz/"],
+    ["foreign path", "https://paid-test.lighthouseweb3.xyz/assets"],
+    ["nested IPFS path", "https://paid-test.lighthouseweb3.xyz/ipfs/metadata.json"],
+    ["custom port", "https://paid-test.lighthouseweb3.xyz:8443/ipfs"],
+    ["non-HTTPS scheme", "ipfs://paid-test.lighthouseweb3.xyz/ipfs"],
+  ];
+  const validConfigurations = [
+    ["exact paid host", PAID_GATEWAY, PAID_GATEWAY],
+    ["paid host normalization", "  HTTPS://PAID-TEST.LIGHTHOUSEWEB3.XYZ/ipfs///  ", PAID_GATEWAY],
+    ["project paid host", DEFAULT_PAID_GATEWAY, DEFAULT_PAID_GATEWAY],
+  ];
+  const configurations = [
+    ...invalidConfigurations.map(([label, input]) => [label, input, DEFAULT_PAID_GATEWAY]),
+    ...validConfigurations,
+  ];
+
+  for (const [label, input, expectedGateway] of configurations) {
+    await t.test(label, async () => {
+      const configured = createHarness(input);
+      assert.equal(configured.deliveryGateway, expectedGateway);
+      const result = await configured.buildRunNftPackage({
+        snapshotDataUrl: "data:image/png;base64,bG9jYWwtb25seQ==",
+        meters: 321,
+        coins: 0,
+        driver: "Jesse",
+        vehicle: "Jeep",
+        terrain: "Desert",
+        result: "Crash",
+        siteUrl: "https://game.example",
+      });
+      const reader = await IpldCar.CarReader.fromBytes(new Uint8Array(Buffer.from(result.carBase64, "base64")));
+      const roots = await reader.getRoots();
+      const metadata = JSON.parse(new TextDecoder().decode(await readUnixfsFile(reader, roots[0])));
+
+      assert.equal(result.tokenUri, `${expectedGateway}/${roots[0]}`);
+      assert.equal(metadata.image, `${expectedGateway}/${roots[1]}`);
+      for (const primaryUrl of [result.tokenUri, metadata.image]) {
+        const url = new URL(primaryUrl);
+        assert.equal(url.origin, new URL(expectedGateway).origin);
+        assert.equal(url.protocol, "https:");
+        assert.equal(url.username, "");
+        assert.equal(url.password, "");
+        assert.equal(url.search, "");
+        assert.equal(url.hash, "");
+        assert.equal(url.port, "");
+      }
+      assert.equal(configured.state.httpRequests.length, 0, "configuration tests never contact any gateway");
+    });
+  }
 });

@@ -64,7 +64,13 @@ After a run ends, players can connect a wallet and save their score to the deplo
 
 ### Run NFT minting
 
-The crash snapshot is compressed locally and packaged with OpenSea-compatible metadata before the wallet prompt. The browser waits for the mint transaction to succeed, then the protected server independently verifies its exact event before storing either CID. Success is reported only after the metadata and image are read back byte-for-byte from public IPFS. Canonical metadata and image references use `ipfs://`; the Lighthouse API key remains server-only.
+The crash snapshot is compressed locally as a proportional landscape JPEG and packaged with NFT metadata before the wallet prompt. The browser waits for the mint transaction to succeed, then the protected server independently verifies its exact event before uploading the image and metadata with the server-only `LIGHTHOUSE_API_KEY` and Lighthouse's `X-Storage-Type: annual` selection.
+
+Primary metadata and image URLs use the project's paid Lighthouse gateway only. The server reports verified storage only after retrieving both exact files from that host with JSON/JPEG content types and matching bytes; upload acceptance alone is not verified delivery. The `ipfs://` reference in `properties.files` is content-addressed provenance, not an alternate delivery fallback. `OPENSEA_API_KEY` is optional and only requests an indexing refresh after delivery verification; it does not upload, host or repair files.
+
+The configured `NEXT_PUBLIC_LIGHTHOUSE_GATEWAY_URL` must be an HTTPS dedicated `*.lighthouseweb3.xyz/ipfs` host without credentials, query parameters or fragments. Empty or invalid values resolve to this project's supplied paid gateway. No other delivery host is used.
+
+Minting and storage remain separate operations: this flow prevents IPFS uploads for rejected transactions, but a successful transaction alone does not mean storage has completed. See [NFT storage and minting reliability](docs/nft-storage-research.md) for the exact historical comparison, confirmed incident evidence and ordering tradeoffs. A read-only check for an existing token is available with `node scripts/verify-nft-delivery.mjs <tokenId>`.
 
 ### Gasless support
 
