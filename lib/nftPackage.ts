@@ -133,8 +133,8 @@ export async function buildRunNftPackage(input: RunNftPackageInput): Promise<Run
   const metadataBlocks = await collectBlocks(createFileEncoderStream(metadataFile));
   const metadataRoot = metadataBlocks.at(-1)!.cid;
   const metadataCid = metadataRoot.toString();
-  // Both files are CAR roots. Lighthouse pins the exact metadata and image CIDs
-  // only after the mint succeeds.
+  // Both files are CAR roots. Preparation uploads these exact bytes and verifies
+  // paid-gateway delivery before the application requests a mint transaction.
   const car = await encodeCar([...metadataBlocks, ...imageBlocks], [metadataRoot, imageRoot]);
 
   return {

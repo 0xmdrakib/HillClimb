@@ -51,6 +51,53 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+export class SponsoredCallsPendingError extends Error {
+  constructor(readonly callsId: string) {
+    super("Sponsored transaction is still confirming");
+    this.name = "SponsoredCallsPendingError";
+  }
+}
+
+export class SponsoredCallsFailedError extends Error {
+  constructor(readonly status: number) {
+    super(`Sponsored batch failed (status=${status})`);
+    this.name = "SponsoredCallsFailedError";
+  }
+}
+
+function validCallsId(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 512
+    && !Array.from(value).some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127);
+}
+
+/** One read-only status request; never sends a new batch or opens a wallet. */
+export async function getSponsoredCallsTransactionHash(
+  provider: Eip1193Provider,
+  callsId: string,
+): Promise<`0x${string}`> {
+  if (!validCallsId(callsId)) throw new SponsoredCallsPendingError("");
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const status = await Promise.race([
+      provider.request({ method: "wallet_getCallsStatus", params: [callsId] }),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new SponsoredCallsPendingError(callsId)), 8_000);
+      }),
+    ]);
+    const rawStatus = status?.status;
+    // The supported 1.0 sendCalls fallback reports string statuses, while
+    // newer wallets use numeric EIP-5792 status families.
+    const code = rawStatus === "CONFIRMED" ? 200 : rawStatus === "PENDING" ? 100 : Number(rawStatus ?? 0);
+    if (code >= 400 && code < 700) throw new SponsoredCallsFailedError(code);
+    const hash = status?.receipts?.[0]?.transactionHash;
+    if (code >= 200 && code < 300 && typeof hash === "string" && /^0x[0-9a-fA-F]{64}$/.test(hash)) return hash as `0x${string}`;
+    throw new SponsoredCallsPendingError(callsId);
+  } catch (error) {
+    if (error instanceof SponsoredCallsFailedError) throw error;
+    throw new SponsoredCallsPendingError(callsId);
+  } finally { clearTimeout(timer); }
+}
+
 function capabilityKey(from: `0x${string}`, chainIdHex: `0x${string}`) {
   return `${from.toLowerCase()}:${chainIdHex.toLowerCase()}`;
 }
@@ -176,8 +223,11 @@ async function sendCalls(params: {
   from: `0x${string}`;
   calls: Array<{ to: `0x${string}`; value: `0x${string}`; data: `0x${string}` }>;
   paymasterProxyUrl: string;
+  beforeSend?: () => void | Promise<void>;
 }): Promise<unknown> {
   // Try newer shape first (some wallets want this), then fall back to the simpler 1.0 style.
+  // Guard failures are deliberately outside the wallet-error fallback handler.
+  await params.beforeSend?.();
   try {
     return (await params.provider.request({
       method: "wallet_sendCalls",
@@ -200,6 +250,7 @@ async function sendCalls(params: {
     if (!isInvalidParams(e)) throw e;
 
     // Fall back to 1.0 style
+    await params.beforeSend?.();
     return (await params.provider.request({
       method: "wallet_sendCalls",
       params: [
@@ -226,6 +277,8 @@ export async function sendSponsoredCallsAndGetTxHash(params: {
   from: `0x${string}`;
   calls: Array<{ to: `0x${string}`; value: `0x${string}`; data: `0x${string}` }>;
   timeoutMs?: number;
+  beforeSend?: () => void | Promise<void>;
+  onSubmitted?: (submission: { callsId: string }) => void | Promise<void>;
 }): Promise<`0x${string}`> {
   const proxyUrl = paymasterProxyUrl();
   if (!proxyUrl) throw new Error("Missing NEXT_PUBLIC_PAYMASTER_PROXY_SERVER_URL");
@@ -236,6 +289,7 @@ export async function sendSponsoredCallsAndGetTxHash(params: {
     from: params.from,
     calls: params.calls.map((c) => ({ ...c, data: appendErc8021Suffix(c.data) })),
     paymasterProxyUrl: proxyUrl,
+    beforeSend: params.beforeSend,
   });
 
   // Some wallets return the id directly as a string; others return an object.
@@ -245,10 +299,25 @@ export async function sendSponsoredCallsAndGetTxHash(params: {
     callsId = obj.id ?? obj.result ?? obj.callsId;
   }
 
-  if (!callsId || typeof callsId !== "string") {
+  if (!validCallsId(callsId)) {
     throw new Error("wallet_sendCalls did not return a callsId");
   }
 
+  // Capture the accepted batch before any status request can fail. NFT callers
+  // persist this identity; a failed poll is not evidence of a failed submission.
+  if (params.onSubmitted) {
+    try {
+      await params.onSubmitted({ callsId });
+      // NFT state is durable now. One bounded read is enough; the caller can
+      // resume confirmation in the background without keeping the card busy.
+      return await getSponsoredCallsTransactionHash(params.provider, callsId);
+    } catch (error) {
+      if (error instanceof SponsoredCallsFailedError) throw error;
+      throw new SponsoredCallsPendingError(callsId);
+    }
+  }
+
+  // Score submission keeps its existing polling and error behavior.
   const timeoutMs = params.timeoutMs ?? 60_000;
   const start = Date.now();
 

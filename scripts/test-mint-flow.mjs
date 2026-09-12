@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import vm from "node:vm";
+import { isAddress } from "viem";
 
 import ts from "typescript";
 
@@ -30,7 +31,6 @@ function extractMintImplementation() {
   const targets = new Set([
     "resetRunMint",
     "silentlyVerifyMint",
-    "requestMintFinalization",
     "finalizeMintStorage",
     "onMintNft",
   ]);
@@ -100,7 +100,6 @@ function extractMintImplementation() {
         return {
           resetRunMint,
           silentlyVerifyMint,
-          requestMintFinalization,
           finalizeMintStorage,
           onMintNft,
           startupEffect: __startupEffect,
@@ -113,496 +112,606 @@ function extractMintImplementation() {
 
 const makeMintFlow = extractMintImplementation();
 
-class MintStorageError extends Error {
-  constructor(reason) {
-    super(`NFT storage is pending (${reason})`);
-    this.name = "MintStorageError";
-    this.reason = reason;
-  }
-}
-
-class TransactionRevertedError extends Error {
-  constructor() {
-    super("Transaction reverted");
-    this.name = "TransactionRevertedError";
-  }
-}
-
-const TX_A = `0x${"a".repeat(64)}`;
-const TX_B = `0x${"b".repeat(64)}`;
-const TX_C = `0x${"c".repeat(64)}`;
-const TX_D = `0x${"d".repeat(64)}`;
 const LIGHTHOUSE_DELIVERY_GATEWAY = "https://protective-walrus-h5noy.lighthouseweb3.xyz/ipfs";
-
+const TX_A = "0x" + "a".repeat(64);
+const TX_B = "0x" + "b".repeat(64);
+class TransactionRevertedError extends Error {}
+class NftPreparationError extends Error {
+  constructor(reason) { super(reason); this.reason = reason; }
+}
 function nftPackage(label = "current") {
-  const rootCid = `bafy-${label}`;
+  const rootCid = "bafkrei" + label.padEnd(53, "a");
+  return { rootCid, tokenUri: LIGHTHOUSE_DELIVERY_GATEWAY + "/" + rootCid, carBase64: "local-car" };
+}
+function prepared(nft) {
+  const verifiedAt = Date.now();
   return {
-    rootCid,
-    tokenUri: `${LIGHTHOUSE_DELIVERY_GATEWAY}/${rootCid}`,
-    carBase64: `base64-${label}`,
+    ok: true, availability: "verified", rootCid: nft.rootCid, tokenUri: nft.tokenUri,
+    metadataUrl: nft.tokenUri, artworkUrl: LIGHTHOUSE_DELIVERY_GATEWAY + "/bafkrei" + "a".repeat(53),
+    verifiedAt, expiresAt: verifiedAt + 60_000,
   };
 }
-
-function legacyNftPackage(label, tokenUri) {
-  return { ...nftPackage(label), tokenUri };
-}
-
-function persistedPending(nft, txHash, version = 2) {
-  return { package: nft, txHash, version, savedAt: 1_750_000_000_000 };
-}
-
-function successfulResponse(overrides = {}) {
-  return {
-    ok: true,
-    status: 200,
-    json: async () => ({
-      ok: true,
-      metadataUrl: `${LIGHTHOUSE_DELIVERY_GATEWAY}/bafy-metadata`,
-      gatewayUrl: `${LIGHTHOUSE_DELIVERY_GATEWAY}/bafy-image`,
-      openSeaUrl: "https://opensea.io/assets/base/contract/1",
-      ...overrides,
-    }),
+function loadPendingImplementation(storage = { value: undefined }) {
+  const output = { exports: {} };
+  const code = ts.transpileModule(fs.readFileSync(path.resolve("lib/pendingMint.ts"), "utf8"), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const indexedDB = {
+    open() {
+      const request = {};
+      queueMicrotask(() => {
+        request.result = {
+          close() {},
+          transaction() {
+            const transaction = {
+              abort() { transaction.onabort?.(); },
+              objectStore() {
+                const perform = (kind, value) => {
+                  const operation = {};
+                  queueMicrotask(() => {
+                    if (kind === "put") storage.value = structuredClone(value);
+                    if (kind === "delete") storage.value = undefined;
+                    operation.result = kind === "get" ? structuredClone(storage.value) : undefined;
+                    operation.onsuccess?.();
+                    if (kind !== "get") queueMicrotask(() => transaction.oncomplete?.());
+                  });
+                  return operation;
+                };
+                return { get: () => perform("get"), put: (value) => perform("put", value), delete: () => perform("delete") };
+              },
+            };
+            return transaction;
+          },
+        };
+        request.onsuccess?.();
+      });
+      return request;
+    },
   };
-}
-
-function deferred() {
-  let resolve;
-  let reject;
-  const promise = new Promise((res, rej) => {
-    resolve = res;
-    reject = rej;
+  vm.runInNewContext(code, {
+    exports: output.exports, module: output, indexedDB, Date,
+    require: (id) => {
+      if (id === "viem") return { isAddress };
+      assert.equal(id, "@/lib/nftGateway");
+      return { LIGHTHOUSE_DELIVERY_GATEWAY };
+    },
   });
+  return output.exports;
+}
+const { pendingMintKey } = loadPendingImplementation();
+const prepModule = { exports: {} };
+const prepCode = ts.transpileModule(fs.readFileSync(path.resolve("lib/nftPreparation.ts"), "utf8"), {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+}).outputText;
+vm.runInNewContext(prepCode, {
+  exports: prepModule.exports, module: prepModule,
+  require: (id) => {
+    if (id === "@/lib/nftGateway") return { LIGHTHOUSE_DELIVERY_GATEWAY };
+    if (id === "@/lib/nftUploadMessage" || id === "@/lib/onchain") return {};
+    throw new Error("Unexpected preparation module: " + id);
+  }, Date,
+});
+function deferred() {
+  let resolve, reject;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 }
-
 async function eventually(predicate, message) {
-  for (let attempt = 0; attempt < 80; attempt += 1) {
+  for (let i = 0; i < 80; i++) {
     if (predicate()) return;
     await new Promise((resolve) => setImmediate(resolve));
   }
   assert.fail(message);
 }
-
 function createHarness(overrides = {}) {
-  const state = {
-    actionErr: "",
-    hasPendingMint: false,
-    mintBusy: false,
-    mintGatewayUrl: null,
-    mintOpenSeaUrl: null,
-    mintStage: "",
-    mintTx: null,
-    transitions: [],
-  };
-  const calls = {
-    build: 0,
-    ensureWallet: 0,
-    fetch: 0,
-    load: 0,
-    mint: 0,
-    remove: [],
-    save: [],
-    wait: 0,
-  };
-  const persisted = new Map();
+  const state = { actionErr: "", hasPendingMint: false, mintBusy: false, mintGatewayUrl: null, mintOpenSeaUrl: null, mintStage: "", mintTx: null };
+  const calls = { build: 0, prepare: 0, mint: 0, confirm: 0, resolveBatch: 0, fetch: 0, save: [], remove: [], load: 0, sequence: [] };
+  const wallet = { provider: {}, address: "0x1111111111111111111111111111111111111111" };
   const refs = {
-    pending: { current: null },
-    verificationRuns: { current: new Map() },
-    finalizeRequests: { current: new Map() },
-    mintRun: { current: 0 },
-    mintAttempt: { current: null },
-    mintedRun: { current: false },
-    finalizedHashes: { current: new Set() },
-    wallet: { current: { provider: {}, address: "0xabc" } },
+    pending: { current: null }, verificationRuns: { current: new Map() }, confirmations: { current: new Map() },
+    mintRun: { current: 0 }, mintAttempt: { current: null }, mintedRun: { current: false },
+    finalizedHashes: { current: new Set() }, wallet: { current: wallet },
   };
   const currentPackage = nftPackage();
-  const setState = (name) => (value) => {
-    state[name] = value;
-    state.transitions.push([name, value]);
+  const persisted = new Map();
+  const set = (key) => (value) => { state[key] = value; };
+  const bindings = {
+    HEADS: { jesse: { label: "Jesse" } }, VEHICLES: { jeep: { name: "Jeep" } },
+    MAPS: { hills: { name: "Countryside" } }, LIGHTHOUSE_DELIVERY_GATEWAY,
+    TransactionRevertedError, NftPreparationError,
+    buildRunNftPackage: async () => { calls.build++; calls.sequence.push("build"); return currentPackage; },
+    prepareRunNft: async () => { calls.prepare++; calls.sequence.push("prepare"); return prepared(currentPackage); },
+    assertPreparedNft: prepModule.exports.assertPreparedNft,
+    assertNftWalletAccount: async () => { calls.sequence.push("account"); },
+    confirmPreparedRunNft: async (txHash) => {
+      calls.confirm++; calls.sequence.push("confirm");
+      return { txHash, openSeaUrl: "https://opensea.io/item/base/contract/1" };
+    },
+    resolveSponsoredMintTransaction: async () => { calls.resolveBatch++; return TX_A; },
+    pendingMintKey,
+    mintRunNft: async (...args) => { await args[5](); calls.mint++; calls.sequence.push("mint"); return TX_A; },
+    ensureConnected: async () => { refs.wallet.current = wallet; return wallet.address; },
+    console: { error() {}, warn() {} },
+    humanizeTxErr: (error) => error.message,
+    fetch: async () => { calls.fetch++; throw new Error("Post-mint storage calls are forbidden"); },
+    loadPendingRunMints: async () => { calls.load++; return []; },
+    removePendingRunMint: async (hash) => { calls.remove.push(hash); persisted.delete(hash); },
+    savePendingRunMint: async (value) => { calls.save.push(value); persisted.set(pendingMintKey(value), value); },
+    finalizedMintHashesRef: refs.finalizedHashes, mintAttemptRef: refs.mintAttempt,
+    mintRunRef: refs.mintRun, mintVerificationRunsRef: refs.verificationRuns,
+    mintConfirmationRequestsRef: refs.confirmations, mintedRunRef: refs.mintedRun, pendingMintRef: refs.pending,
+    walletRef: refs.wallet, walletAddr: wallet.address,
+    gameOverCoins: 3, gameOverMeters: 42, gameOverShot: "data:image/png;base64,test",
+    head: "jesse", selectedVehicle: "jeep", selectedMap: "hills",
+    state: { distanceM: 42, status: "CRASH" }, runNftAddress: "0x2222222222222222222222222222222222222222",
+    url: "https://game.example", window: { location: { origin: "https://game.example" }, setTimeout: () => 0 },
+    setActionErr: set("actionErr"), setHasPendingMint: set("hasPendingMint"), setMintBusy: set("mintBusy"),
+    setMintGatewayUrl: set("mintGatewayUrl"), setMintOpenSeaUrl: set("mintOpenSeaUrl"), setMintStage: set("mintStage"),
+    setMintTx: set("mintTx"),
+    ...overrides,
   };
-
-  const defaultBindings = {
-    AbortSignal,
-    HEADS: { jesse: { label: "Jesse" }, brian: { label: "Brian" } },
-    LIGHTHOUSE_DELIVERY_GATEWAY,
-    MAPS: { countryside: { name: "Countryside" } },
-    MintStorageError,
-    TransactionRevertedError,
-    VEHICLES: { jeep: { name: "Jeep" } },
-    buildRunNftPackage: async () => {
-      calls.build += 1;
-      return currentPackage;
-    },
-    console: { error() {}, warn() {}, log() {} },
-    ensureConnected: async () => {
-      calls.ensureWallet += 1;
-      return "0xabc";
-    },
-    fetch: async () => {
-      calls.fetch += 1;
-      return successfulResponse();
-    },
-    finalizedMintHashesRef: refs.finalizedHashes,
-    gameOverCoins: 3,
-    gameOverMeters: 42,
-    gameOverShot: "data:image/png;base64,snapshot",
-    hasPendingMint: false,
-    head: "jesse",
-    humanizeTxErr: (error) => String(error?.message || error || "Transaction failed"),
-    loadPendingRunMints: async () => {
-      calls.load += 1;
-      return [];
-    },
-    mintAttemptRef: refs.mintAttempt,
-    mintFinalizeRequestsRef: refs.finalizeRequests,
-    mintRunNft: async () => {
-      calls.mint += 1;
+  return { bindings, calls, refs, state, currentPackage, persisted, flow: makeMintFlow(bindings) };
+}
+test("actual handler verifies preparation before mint and makes no post-mint storage call", async () => {
+  const h = createHarness();
+  await h.flow.onMintNft();
+  assert.deepEqual(h.calls.sequence, ["build", "prepare", "account", "mint", "confirm"]);
+  assert.equal(h.calls.fetch, 0);
+  assert.equal(h.calls.save[0].prepared, true);
+  assert.equal(h.refs.mintedRun.current, true);
+  assert.equal(h.state.mintStage, "Mint successful");
+  assert.equal(h.state.mintGatewayUrl, h.currentPackage.tokenUri);
+  assert.match(h.state.mintOpenSeaUrl, /^https:\/\/opensea.io\/item\/base\//);
+});
+for (const [label, change] of [
+  ["pending response", (value) => ({ ...value, ok: false, availability: "pending" })],
+  ["missing proof", () => null],
+  ["wrong metadata CID", (value) => ({ ...value, rootCid: "another" })],
+  ["wrong token URI", (value) => ({ ...value, tokenUri: "https://wrong.example/file" })],
+  ["expired proof", (value) => ({ ...value, expiresAt: Date.now() - 1 })],
+  ["unverified availability", (value) => ({ ...value, availability: "uploaded" })],
+]) {
+  test(label + " cannot reach wallet mint or persist a transaction", async () => {
+    const h = createHarness();
+    h.bindings.prepareRunNft = async () => { h.calls.prepare++; return change(prepared(h.currentPackage)); };
+    await h.flow.onMintNft();
+    assert.equal(h.calls.mint, 0);
+    assert.equal(h.calls.confirm, 0);
+    assert.equal(h.calls.save.length, 0);
+    assert.equal(h.refs.pending.current, null);
+    assert.equal(h.state.mintBusy, false);
+    assert.ok(h.state.actionErr);
+  });
+}
+test("upload failure cannot send a mint", async () => {
+  const h = createHarness({ prepareRunNft: async () => { throw new NftPreparationError("metadata_unavailable"); } });
+  await h.flow.onMintNft();
+  assert.equal(h.calls.mint, 0);
+  assert.equal(h.calls.save.length, 0);
+  assert.equal(h.refs.pending.current, null);
+});
+test("wallet cancellation after verified upload keeps files but stores no pending mint", async () => {
+  const h = createHarness();
+  h.bindings.mintRunNft = async () => { h.calls.mint++; throw new Error("User rejected the request"); };
+  await h.flow.onMintNft();
+  assert.equal(h.calls.prepare, 1);
+  assert.equal(h.calls.mint, 1);
+  assert.equal(h.calls.save.length, 0);
+  assert.equal(h.calls.remove.length, 0);
+  assert.equal(h.refs.pending.current, null);
+  assert.match(h.state.actionErr, /rejected/);
+});
+test("double click prepares and mints only once", async () => {
+  const gate = deferred();
+  const h = createHarness();
+  h.bindings.prepareRunNft = async () => { h.calls.prepare++; return gate.promise; };
+  const first = h.flow.onMintNft();
+  const second = h.flow.onMintNft();
+  await eventually(() => h.calls.prepare === 1, "did not start preparation");
+  assert.equal(h.calls.mint, 0);
+  gate.resolve(prepared(h.currentPackage));
+  await Promise.all([first, second]);
+  assert.equal(h.calls.prepare, 1);
+  assert.equal(h.calls.mint, 1);
+});
+test("reset during preparation prevents late wallet submission and stale UI", async () => {
+  const gate = deferred();
+  const h = createHarness({ prepareRunNft: async () => { h.calls.prepare++; return gate.promise; } });
+  const attempt = h.flow.onMintNft();
+  await eventually(() => h.calls.prepare === 1, "did not begin preparation");
+  h.flow.resetRunMint();
+  gate.resolve(prepared(h.currentPackage));
+  await attempt;
+  assert.equal(h.calls.mint, 0);
+  assert.equal(h.state.mintBusy, false);
+  assert.equal(h.state.mintStage, "");
+});
+test("disconnect during preparation cannot submit from a stale wallet", async () => {
+  const gate = deferred();
+  const h = createHarness({ prepareRunNft: async () => { h.calls.prepare++; return gate.promise; } });
+  const attempt = h.flow.onMintNft();
+  await eventually(() => h.calls.prepare === 1, "did not begin preparation");
+  h.refs.wallet.current = null;
+  gate.resolve(prepared(h.currentPackage));
+  await attempt;
+  assert.equal(h.calls.mint, 0);
+});
+test("account change before mint fails closed", async () => {
+  const h = createHarness({ assertNftWalletAccount: async () => { throw new Error("NFT wallet account changed"); } });
+  await h.flow.onMintNft();
+  assert.equal(h.calls.mint, 0);
+  assert.equal(h.calls.save.length, 0);
+});
+test("proof expiring during the final account check cannot send a mint", async () => {
+  const h = createHarness();
+  let result;
+  h.bindings.prepareRunNft = async () => { result = prepared(h.currentPackage); return result; };
+  h.bindings.assertNftWalletAccount = async () => { result.expiresAt = Date.now() - 1; };
+  await h.flow.onMintNft();
+  assert.equal(h.calls.mint, 0);
+});
+for (const change of ["run", "wallet", "proof"]) {
+  test(`actual page send guard blocks ${change} changing inside mint network preparation`, async () => {
+    const h = createHarness();
+    let result;
+    h.bindings.prepareRunNft = async () => { result = prepared(h.currentPackage); return result; };
+    h.bindings.mintRunNft = async (...args) => {
+      assert.equal(typeof args[5], "function");
+      if (change === "run") h.flow.resetRunMint();
+      if (change === "wallet") h.refs.wallet.current = null;
+      if (change === "proof") result.expiresAt = Date.now() - 1;
+      await args[5]();
+      h.calls.mint++;
       return TX_A;
-    },
-    mintRunRef: refs.mintRun,
-    mintVerificationRunsRef: refs.verificationRuns,
-    mintedRunRef: refs.mintedRun,
-    pendingMintRef: refs.pending,
-    removePendingRunMint: async (txHash) => {
-      calls.remove.push(txHash);
-      persisted.delete(txHash);
-    },
-    runNftAddress: "0x0000000000000000000000000000000000000001",
-    savePendingRunMint: async (pending) => {
-      calls.save.push(pending);
-      persisted.set(pending.txHash, pending);
-    },
-    selectedMap: "countryside",
-    selectedVehicle: "jeep",
-    setActionErr: setState("actionErr"),
-    setHasPendingMint: setState("hasPendingMint"),
-    setMintBusy: setState("mintBusy"),
-    setMintGatewayUrl: setState("mintGatewayUrl"),
-    setMintOpenSeaUrl: setState("mintOpenSeaUrl"),
-    setMintStage: setState("mintStage"),
-    setMintTx: setState("mintTx"),
-    state: { distanceM: 42, status: "CRASH" },
-    url: "https://hillclimb.example",
-    waitForBaseTransaction: async (txHash) => {
-      calls.wait += 1;
-      return txHash;
-    },
-    walletAddr: "0xabc",
-    walletRef: refs.wallet,
-    // Background verification should remain dormant in unit tests. A pending
-    // Promise has no event-loop handle and therefore cannot make node:test hang.
-    window: { setTimeout: () => 0 },
-  };
-
-  const bindings = { ...defaultBindings, ...(overrides.bindings ?? {}) };
-  const flow = makeMintFlow(bindings);
-  return { bindings, calls, currentPackage, flow, persisted, refs, state };
+    };
+    await h.flow.onMintNft();
+    assert.equal(h.calls.mint, 0);
+    assert.equal(h.calls.save.length, 0);
+    assert.equal(h.calls.confirm, 0);
+  });
 }
 
-test("a persisted old run finishes silently and never hijacks the current run", async () => {
-  const oldPending = persistedPending(nftPackage("old"), TX_A);
-  const newPending = { package: nftPackage("new"), txHash: TX_B };
-  const responseGate = deferred();
-  let loadPass = 0;
-  const harness = createHarness({
-    bindings: {
-      fetch: async () => {
-        harness.calls.fetch += 1;
-        return responseGate.promise;
-      },
-      loadPendingRunMints: async () => {
-        harness.calls.load += 1;
-        loadPass += 1;
-        return loadPass === 1 ? [oldPending] : [];
-      },
-    },
-  });
-
-  const cleanup = harness.flow.startupEffect();
-  await eventually(() => harness.calls.fetch === 1, "startup recovery did not request finalization");
-
-  harness.flow.resetRunMint();
-  harness.refs.pending.current = newPending;
-  harness.state.hasPendingMint = true;
-  responseGate.resolve(successfulResponse());
-
-  await eventually(() => harness.calls.remove.includes(TX_A), "old persisted mint did not finish");
-  assert.equal(harness.refs.pending.current, newPending);
-  assert.equal(harness.state.hasPendingMint, true);
-  assert.equal(harness.state.mintGatewayUrl, null);
-  assert.equal(harness.refs.mintedRun.current, false);
-  cleanup();
+test("late receipt from a prior run cannot overwrite current-run UI", async () => {
+  const gate = deferred();
+  const h = createHarness();
+  h.bindings.confirmPreparedRunNft = async () => { h.calls.confirm++; return gate.promise; };
+  const attempt = h.flow.onMintNft();
+  await eventually(() => h.calls.confirm === 1, "did not await receipt");
+  h.flow.resetRunMint();
+  gate.resolve({ txHash: TX_A, openSeaUrl: "https://opensea.io/item/base/contract/1" });
+  await attempt;
+  assert.equal(h.state.mintStage, "");
+  assert.equal(h.state.mintGatewayUrl, null);
+  assert.equal(h.refs.mintedRun.current, false);
+  assert.ok(h.calls.remove.includes(TX_A));
 });
-
-test("startup leaves every version-1 HTTP/IPFS record untouched", async () => {
-  const legacyRecords = [
-    persistedPending(
-      nftPackage("legacy-paid-exact"),
-      TX_A,
-      1,
-    ),
-    persistedPending(
-      legacyNftPackage(
-        "legacy-public",
-        "https://gateway.lighthouse.storage/ipfs/bafy-legacy-public",
-      ),
-      TX_B,
-      1,
-    ),
-    persistedPending(
-      legacyNftPackage("legacy-flat-ipfs", "ipfs://bafy-legacy-flat-ipfs"),
-      TX_C,
-      1,
-    ),
-    persistedPending(
-      legacyNftPackage(
-        "legacy-directory",
-        "ipfs://bafy-legacy-directory/metadata.json",
-      ),
-      TX_D,
-      1,
-    ),
-  ];
-  let loadPass = 0;
-  const harness = createHarness({
-    bindings: {
-      loadPendingRunMints: async () => {
-        harness.calls.load += 1;
-        loadPass += 1;
-        return loadPass === 1 ? legacyRecords : [];
-      },
-    },
-  });
-  for (const pending of legacyRecords) harness.persisted.set(pending.txHash, pending);
-
-  const cleanup = harness.flow.startupEffect();
-  await eventually(() => harness.calls.load > 0, "startup recovery did not inspect persistence");
-  await new Promise((resolve) => setImmediate(resolve));
-
-  assert.equal(harness.calls.fetch, 0);
-  assert.equal(harness.calls.remove.length, 0);
-  assert.equal(harness.calls.ensureWallet, 0);
-  assert.equal(harness.calls.mint, 0);
-  assert.deepEqual([...harness.persisted.keys()].sort(), [TX_A, TX_B, TX_C, TX_D].sort());
-  assert.equal(harness.refs.pending.current, null);
-  cleanup();
+test("confirmed mint remains successful without any upload/finalize API", async () => {
+  const h = createHarness({ fetch: async () => { throw new Error("storage offline"); } });
+  await h.flow.onMintNft();
+  assert.equal(h.refs.mintedRun.current, true);
+  assert.equal(h.state.actionErr, "");
+  assert.equal(h.calls.confirm, 1);
 });
-
-test("startup finalizes a version-2 paid-gateway record when no fresh attempt is active", async () => {
-  const canonical = persistedPending(nftPackage("paid"), TX_A);
-  let loadPass = 0;
-  const harness = createHarness({
-    bindings: {
-      loadPendingRunMints: async () => {
-        harness.calls.load += 1;
-        loadPass += 1;
-        return loadPass === 1 ? [canonical] : [];
-      },
-    },
-  });
-  harness.persisted.set(canonical.txHash, canonical);
-
-  const cleanup = harness.flow.startupEffect();
-  await eventually(() => harness.calls.remove.includes(TX_A), "canonical recovery did not finish");
-
-  assert.equal(harness.calls.fetch, 1);
-  assert.equal(harness.calls.wait, 0);
-  assert.equal(harness.calls.ensureWallet, 0);
-  assert.equal(harness.calls.mint, 0);
-  assert.equal(harness.persisted.has(TX_A), false);
-  cleanup();
+test("pending receipt only offers a confirmation check, never a second mint or upload", async () => {
+  const h = createHarness();
+  h.bindings.confirmPreparedRunNft = async () => { h.calls.confirm++; throw new Error("receipt unavailable"); };
+  await h.flow.onMintNft();
+  assert.equal(h.refs.pending.current.prepared, true);
+  assert.equal(h.state.hasPendingMint, true);
+  assert.equal(h.state.mintStage, "");
+  assert.match(h.state.actionErr, /confirming/);
+  await h.flow.onMintNft();
+  assert.equal(h.calls.prepare, 1);
+  assert.equal(h.calls.mint, 1);
+  assert.equal(h.calls.confirm, 2);
+  assert.equal(h.calls.fetch, 0);
 });
-
-test("a fresh foreground mint blocks startup recovery until the attempt is released", async () => {
-  const canonical = persistedPending(nftPackage("queued"), TX_A);
-  const sleepers = [];
-  let loadPass = 0;
-  const harness = createHarness({
-    bindings: {
-      loadPendingRunMints: async () => {
-        harness.calls.load += 1;
-        loadPass += 1;
-        return loadPass === 1 ? [canonical] : [];
-      },
-      window: {
-        setTimeout(resolve, delay) {
-          sleepers.push({ delay, resolve });
-          return sleepers.length;
-        },
-      },
-    },
-  });
-  harness.refs.mintAttempt.current = harness.refs.mintRun.current;
-
-  const cleanup = harness.flow.startupEffect();
-  await eventually(() => sleepers.length === 1, "startup recovery did not yield to foreground mint");
-
-  assert.equal(sleepers[0].delay, 1_000);
-  assert.equal(harness.calls.fetch, 0);
-  assert.equal(harness.calls.remove.length, 0);
-
-  harness.refs.mintAttempt.current = null;
-  sleepers.shift().resolve();
-  await eventually(() => harness.calls.remove.includes(TX_A), "recovery did not resume after mint release");
-
-  assert.equal(harness.calls.fetch, 1);
-  assert.equal(harness.calls.ensureWallet, 0);
-  assert.equal(harness.calls.mint, 0);
-  cleanup();
+test("repriced transaction retains prepared provenance and updates the explorer hash", async () => {
+  const h = createHarness({ confirmPreparedRunNft: async () => ({ txHash: TX_B, openSeaUrl: "https://opensea.io/item/base/contract/2" }) });
+  await h.flow.onMintNft();
+  assert.equal(h.state.mintTx, TX_B);
+  assert.equal(h.calls.save.at(-1).prepared, true);
+  assert.ok(h.calls.remove.includes(TX_A));
+  assert.ok(h.calls.remove.includes(TX_B));
 });
-
-test("same-run pending retry skips wallet, package building, and client receipt wait", async () => {
-  const harness = createHarness();
-  harness.refs.pending.current = { package: nftPackage("pending"), txHash: TX_A };
-  harness.state.hasPendingMint = true;
-
-  await harness.flow.onMintNft();
-
-  assert.equal(harness.calls.ensureWallet, 0);
-  assert.equal(harness.calls.build, 0);
-  assert.equal(harness.calls.mint, 0);
-  assert.equal(harness.calls.wait, 0);
-  assert.equal(harness.calls.fetch, 1);
-  assert.equal(harness.refs.pending.current, null);
-  assert.equal(harness.refs.mintedRun.current, true);
-});
-
-test("wallet rejection never starts persistence or server upload", async () => {
-  const rejection = Object.assign(new Error("User rejected the request"), { code: 4001 });
-  const harness = createHarness({
-    bindings: {
-      mintRunNft: async () => {
-        harness.calls.mint += 1;
-        throw rejection;
-      },
-    },
-  });
-
-  await harness.flow.onMintNft();
-
-  assert.equal(harness.calls.mint, 1);
-  assert.equal(harness.calls.fetch, 0);
-  assert.equal(harness.calls.save.length, 0);
-  assert.equal(harness.refs.pending.current, null);
-  assert.match(harness.state.actionErr, /reject/i);
-});
-
-test("a fast double click submits exactly one wallet mint", async () => {
-  const walletGate = deferred();
-  const harness = createHarness({
-    bindings: {
-      mintRunNft: async () => {
-        harness.calls.mint += 1;
-        return walletGate.promise;
-      },
-    },
-  });
-
-  const first = harness.flow.onMintNft();
-  const second = harness.flow.onMintNft();
-  await eventually(() => harness.calls.mint === 1, "first click did not reach wallet mint");
-  walletGate.resolve(TX_A);
-  await Promise.all([first, second]);
-
-  assert.equal(harness.calls.mint, 1);
-  assert.equal(harness.calls.fetch, 1);
-  assert.equal(harness.calls.save.length, 1);
-});
-
-test("a late finalization result cannot mutate the reset/new-run UI", async () => {
-  const receiptGate = deferred();
-  const harness = createHarness({
-    bindings: {
-      waitForBaseTransaction: async () => {
-        harness.calls.wait += 1;
-        return receiptGate.promise;
-      },
-    },
-  });
-
-  const mint = harness.flow.onMintNft();
-  await eventually(() => harness.calls.wait === 1, "mint did not reach receipt wait");
-  harness.flow.resetRunMint();
-  const runAfterReset = harness.refs.mintRun.current;
-  receiptGate.resolve(TX_A);
-  await mint;
-
-  assert.equal(harness.refs.mintRun.current, runAfterReset);
-  assert.equal(harness.refs.pending.current, null);
-  assert.equal(harness.refs.mintedRun.current, false);
-  assert.equal(harness.state.mintBusy, false);
-  assert.equal(harness.state.mintStage, "");
-  assert.equal(harness.state.mintGatewayUrl, null);
-  assert.equal(harness.state.mintOpenSeaUrl, null);
-});
-
-test("starting a new run does not delete an unfinished persisted package", async () => {
-  const harness = createHarness();
-  const pending = { package: nftPackage("durable"), txHash: TX_A };
-  await harness.bindings.savePendingRunMint(pending);
-  harness.refs.pending.current = pending;
-
-  harness.flow.resetRunMint();
-
-  assert.equal(harness.calls.remove.length, 0);
-  assert.equal(harness.persisted.get(TX_A), pending);
-  assert.equal(harness.refs.pending.current, null);
-});
-
-test("successful storage completion disables duplicate mint attempts for that run", async () => {
-  const harness = createHarness();
-
-  await harness.flow.onMintNft();
-  const completedCounts = {
-    build: harness.calls.build,
-    fetch: harness.calls.fetch,
-    mint: harness.calls.mint,
-    save: harness.calls.save.length,
+test("reset while a repriced transaction is being persisted cannot mark the new run minted", async () => {
+  const replacementSaved = deferred();
+  const h = createHarness({ confirmPreparedRunNft: async () => ({ txHash: TX_B, openSeaUrl: "https://opensea.io/item/base/contract/2" }) });
+  h.bindings.savePendingRunMint = async (pending) => {
+    h.calls.save.push(pending);
+    if (pending.txHash === TX_B) await replacementSaved.promise;
+    h.persisted.set(pendingMintKey(pending), pending);
   };
-  await harness.flow.onMintNft();
-
-  assert.deepEqual(
-    {
-      build: harness.calls.build,
-      fetch: harness.calls.fetch,
-      mint: harness.calls.mint,
-      save: harness.calls.save.length,
-    },
-    completedCounts,
-  );
-  assert.equal(harness.refs.mintedRun.current, true);
-  assert.match(String(harness.state.mintGatewayUrl), /^https:\/\//);
+  const attempt = h.flow.onMintNft();
+  await eventually(() => h.calls.save.some((pending) => pending.txHash === TX_B), "replacement persistence did not begin");
+  assert.equal(h.state.mintTx, TX_B);
+  h.flow.resetRunMint();
+  replacementSaved.resolve();
+  await attempt;
+  assert.equal(h.refs.pending.current, null);
+  assert.equal(h.refs.mintedRun.current, false);
+  assert.equal(h.state.mintTx, null);
+  assert.equal(h.state.hasPendingMint, false);
+  assert.equal(h.state.mintStage, "");
+  assert.equal(h.state.mintGatewayUrl, null);
+  assert.equal(h.state.mintOpenSeaUrl, null);
+  assert.equal(h.state.actionErr, "");
+  assert.ok(h.calls.remove.includes(TX_A));
+  assert.ok(h.calls.remove.includes(TX_B));
+});
+test("reverted transaction clears only that confirmation record", async () => {
+  const h = createHarness({ confirmPreparedRunNft: async () => { throw new TransactionRevertedError("Transaction failed"); } });
+  await h.flow.onMintNft();
+  assert.equal(h.refs.pending.current, null);
+  assert.equal(h.state.hasPendingMint, false);
+  assert.equal(h.refs.mintedRun.current, false);
+  assert.ok(h.calls.remove.includes(TX_A));
+});
+test("completed run cannot mint a second time", async () => {
+  const h = createHarness();
+  await h.flow.onMintNft();
+  await h.flow.onMintNft();
+  assert.equal(h.calls.prepare, 1);
+  assert.equal(h.calls.mint, 1);
+});
+test("startup leaves all version1 and version2 records untouched", async () => {
+  const h = createHarness();
+  const old = [1, 2].map((version) => ({ version, txHash: version === 1 ? TX_A : TX_B, package: nftPackage("old"), savedAt: Date.now() }));
+  h.bindings.loadPendingRunMints = async () => { h.calls.load++; return old; };
+  const cleanup = h.flow.startupEffect();
+  await eventually(() => h.calls.load > 0, "did not inspect confirmation records");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(h.calls.confirm, 0);
+  assert.equal(h.calls.fetch, 0);
+  assert.equal(h.calls.remove.length, 0);
+  cleanup();
+});
+test("startup resumes version3 through chain receipt only and does not attach it to current run", async () => {
+  const h = createHarness();
+  const pending = { version: 3, prepared: true, txHash: TX_A, package: nftPackage("old"), savedAt: Date.now() };
+  h.bindings.loadPendingRunMints = async () => h.calls.load++ ? [] : [pending];
+  const cleanup = h.flow.startupEffect();
+  await eventually(() => h.calls.remove.includes(TX_A), "did not confirm prepared old run");
+  assert.equal(h.calls.confirm, 1);
+  assert.equal(h.calls.prepare, 0);
+  assert.equal(h.calls.fetch, 0);
+  assert.equal(h.calls.mint, 0);
+  assert.equal(h.refs.pending.current, null);
+  assert.equal(h.state.mintGatewayUrl, null);
+  cleanup();
+});
+test("an old unprepared record cannot invoke confirmation or storage", async () => {
+  const h = createHarness();
+  const result = await h.flow.finalizeMintStorage({ package: nftPackage("old"), txHash: TX_A }, true);
+  assert.equal(result, false);
+  assert.equal(h.calls.confirm, 0);
+  assert.equal(h.calls.fetch, 0);
 });
 
-test("HTTP 202 leaves the exact package pending and shows a retryable message", async () => {
-  const harness = createHarness({
-    bindings: {
-      fetch: async () => {
-        harness.calls.fetch += 1;
-        return {
-          ok: true,
-          status: 202,
-          json: async () => ({
-            ok: false,
-            pending: true,
-            error: "gateway_verification_pending",
-          }),
-        };
-      },
-    },
-  });
+const CALLS_ID = "0xlocal-sponsored-batch";
+const PENDING_WALLET = "0x1111111111111111111111111111111111111111";
+function sponsoredPending(overrides = {}) {
+  return {
+    prepared: true, callsId: CALLS_ID, walletAddress: PENDING_WALLET,
+    package: { ...nftPackage("batch"), carBytes: 20, imageBytes: 10 },
+    ...overrides,
+  };
+}
 
-  await harness.flow.onMintNft();
+test("real pending storage restores an accepted sponsored callsId without inventing a tx hash", async () => {
+  const storage = { value: undefined };
+  const first = loadPendingImplementation(storage);
+  const pending = sponsoredPending();
+  await first.savePendingRunMint(pending);
+  const reloaded = loadPendingImplementation(storage);
+  const records = await reloaded.loadPendingRunMints();
+  assert.equal(records.length, 1);
+  assert.equal(records[0].version, 3);
+  assert.equal(records[0].prepared, true);
+  assert.equal(records[0].callsId, CALLS_ID);
+  assert.equal(records[0].walletAddress, PENDING_WALLET);
+  assert.equal(records[0].txHash, undefined);
+});
 
-  assert.equal(harness.calls.mint, 1);
-  assert.equal(harness.calls.fetch, 1);
-  assert.equal(harness.refs.pending.current?.txHash, TX_A);
-  assert.equal(harness.refs.pending.current?.package, harness.currentPackage);
-  assert.equal(harness.state.hasPendingMint, true);
-  assert.equal(harness.state.mintBusy, false);
-  assert.equal(harness.state.mintGatewayUrl, null);
-  assert.ok(
-    String(harness.state.actionErr || harness.state.mintStage).trim().length > 0,
-    "a pending 202 response must leave visible recovery feedback",
-  );
+test("real pending storage retains stable batch identity when its actual transaction hash arrives", async () => {
+  const api = loadPendingImplementation();
+  const initial = sponsoredPending();
+  const key = api.pendingMintKey(initial);
+  await api.savePendingRunMint(initial);
+  await api.savePendingRunMint({ ...initial, txHash: TX_A });
+  const records = await api.loadPendingRunMints();
+  assert.equal(records.length, 1);
+  assert.equal(records[0].txHash, TX_A);
+  assert.equal(api.pendingMintKey(records[0]), key);
+  await api.removePendingRunMint(key);
+  assert.equal((await api.loadPendingRunMints()).length, 0);
+});
+
+test("real pending storage separates identical batch IDs belonging to different wallets", async () => {
+  const api = loadPendingImplementation();
+  const first = sponsoredPending();
+  const second = sponsoredPending({ walletAddress: "0x2222222222222222222222222222222222222222" });
+  await api.savePendingRunMint(first);
+  await api.savePendingRunMint(second);
+  assert.notEqual(api.pendingMintKey(first), api.pendingMintKey(second));
+  assert.equal((await api.loadPendingRunMints()).length, 2);
+  await api.removePendingRunMint(api.pendingMintKey(first));
+  const records = await api.loadPendingRunMints();
+  assert.equal(records.length, 1);
+  assert.equal(records[0].walletAddress, second.walletAddress);
+});
+
+function installPendingSponsoredMint(h) {
+  h.bindings.mintRunNft = async (...args) => {
+    await args[5]();
+    h.calls.mint++;
+    assert.equal(typeof args[6], "function", "Accepted batch acknowledgement must be supplied");
+    await args[6]({ callsId: CALLS_ID });
+    throw new Error("Sponsored transaction is still confirming");
+  };
+}
+
+test("accepted batch is retained and persisted before delayed status polling can fail", async () => {
+  const h = createHarness();
+  const durable = deferred();
+  let statusPollingReached = false;
+  h.bindings.savePendingRunMint = async (pending) => {
+    h.calls.save.push(pending);
+    await durable.promise;
+    h.persisted.set(pendingMintKey(pending), pending);
+  };
+  h.bindings.mintRunNft = async (...args) => {
+    await args[5]();
+    h.calls.mint++;
+    await args[6]({ callsId: CALLS_ID });
+    statusPollingReached = true;
+    throw new Error("Status RPC unavailable");
+  };
+  const first = h.flow.onMintNft();
+  await eventually(() => h.calls.save.length === 1, "accepted batch was not captured");
+  assert.equal(h.refs.pending.current.callsId, CALLS_ID);
+  assert.equal(h.refs.pending.current.txHash, undefined);
+  assert.equal(h.state.mintTx, null);
+  assert.equal(h.state.hasPendingMint, true);
+  assert.equal(statusPollingReached, false);
+  await h.flow.onMintNft();
+  assert.equal(h.calls.mint, 1);
+  durable.resolve();
+  await first;
+  assert.equal(statusPollingReached, true);
+  assert.ok(h.persisted.has(pendingMintKey(h.refs.pending.current)));
+  assert.match(h.state.actionErr, /confirming/);
+  assert.equal(h.calls.fetch, 0);
+});
+
+test("retrying an accepted batch resolves its real hash and receipt without minting or uploading again", async () => {
+  const h = createHarness();
+  installPendingSponsoredMint(h);
+  await h.flow.onMintNft();
+  const key = pendingMintKey(h.refs.pending.current);
+  assert.equal(h.state.mintTx, null);
+  await h.flow.onMintNft();
+  assert.equal(h.calls.build, 1);
+  assert.equal(h.calls.prepare, 1);
+  assert.equal(h.calls.mint, 1);
+  assert.equal(h.calls.resolveBatch, 1);
+  assert.equal(h.calls.confirm, 1);
+  assert.equal(h.calls.fetch, 0);
+  assert.equal(h.state.mintTx, TX_A);
+  assert.equal(h.state.mintStage, "Mint successful");
+  assert.ok(h.calls.save.some((record) => record.callsId === CALLS_ID && record.txHash === TX_A));
+  assert.ok(h.calls.remove.includes(key));
+  assert.equal(h.refs.pending.current, null);
+});
+
+test("once batch hash is discovered a later receipt retry does not re-query or resend the batch", async () => {
+  const h = createHarness();
+  installPendingSponsoredMint(h);
+  await h.flow.onMintNft();
+  h.bindings.confirmPreparedRunNft = async () => { h.calls.confirm++; throw new Error("Receipt pending"); };
+  await h.flow.onMintNft();
+  assert.equal(h.refs.pending.current.txHash, TX_A);
+  assert.equal(h.calls.resolveBatch, 1);
+  await h.flow.onMintNft();
+  assert.equal(h.calls.resolveBatch, 1);
+  assert.equal(h.calls.confirm, 2);
+  assert.equal(h.calls.mint, 1);
+  assert.equal(h.calls.prepare, 1);
+  assert.equal(h.calls.fetch, 0);
+});
+
+test("reload checks stored accepted batch through wallet status and receipt only", async () => {
+  const h = createHarness();
+  const record = { version: 3, savedAt: Date.now(), ...sponsoredPending() };
+  const key = pendingMintKey(record);
+  h.bindings.loadPendingRunMints = async () => h.calls.load++ ? [] : [record];
+  const cleanup = h.flow.startupEffect();
+  await eventually(() => h.calls.remove.includes(key), "stored batch was not confirmed");
+  assert.equal(h.calls.resolveBatch, 1);
+  assert.equal(h.calls.confirm, 1);
+  assert.equal(h.calls.prepare, 0);
+  assert.equal(h.calls.mint, 0);
+  assert.equal(h.calls.fetch, 0);
+  assert.equal(h.refs.pending.current, null);
+  assert.equal(h.state.mintTx, null);
+  assert.equal(h.state.mintGatewayUrl, null);
+  cleanup();
+});
+
+test("reload with an unavailable batch wallet keeps record pending without connecting or resubmitting", async () => {
+  const h = createHarness();
+  const record = { version: 3, savedAt: Date.now(), ...sponsoredPending() };
+  h.refs.wallet.current = null;
+  h.bindings.loadPendingRunMints = async () => { h.calls.load++; return [record]; };
+  h.bindings.resolveSponsoredMintTransaction = async (_id, _address, wallet) => {
+    h.calls.resolveBatch++;
+    assert.equal(wallet, undefined);
+    throw new Error("Wallet not connected; batch pending");
+  };
+  h.bindings.ensureConnected = async () => assert.fail("Background confirmation must not open a wallet");
+  const cleanup = h.flow.startupEffect();
+  await eventually(() => h.calls.resolveBatch === 1, "stored batch was not checked");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(h.calls.confirm, 0);
+  assert.equal(h.calls.remove.length, 0);
+  assert.equal(h.calls.prepare, 0);
+  assert.equal(h.calls.mint, 0);
+  assert.equal(h.calls.fetch, 0);
+  cleanup();
+});
+
+test("definitive sponsored failure clears only its accepted batch and does not send a replacement", async () => {
+  const h = createHarness();
+  h.bindings.mintRunNft = async (...args) => {
+    await args[5]();
+    h.calls.mint++;
+    await args[6]({ callsId: CALLS_ID });
+    throw new TransactionRevertedError("Transaction failed");
+  };
+  await h.flow.onMintNft();
+  assert.equal(h.refs.pending.current, null);
+  assert.equal(h.state.hasPendingMint, false);
+  assert.equal(h.calls.remove.length, 1);
+  assert.equal(h.calls.remove[0], pendingMintKey(sponsoredPending()));
+  assert.equal(h.calls.mint, 1);
+  assert.equal(h.calls.prepare, 1);
+  assert.equal(h.calls.fetch, 0);
+});
+
+test("late accepted batch result from an old run cannot overwrite new-run state", async () => {
+  const h = createHarness();
+  installPendingSponsoredMint(h);
+  await h.flow.onMintNft();
+  const key = pendingMintKey(h.refs.pending.current);
+  const gate = deferred();
+  h.bindings.resolveSponsoredMintTransaction = async () => { h.calls.resolveBatch++; return gate.promise; };
+  const retry = h.flow.onMintNft();
+  await eventually(() => h.calls.resolveBatch === 1, "batch retry was not started");
+  h.flow.resetRunMint();
+  gate.resolve(TX_A);
+  await retry;
+  assert.equal(h.refs.pending.current, null);
+  assert.equal(h.refs.mintedRun.current, false);
+  assert.equal(h.state.mintTx, null);
+  assert.equal(h.state.mintStage, "");
+  assert.equal(h.state.mintGatewayUrl, null);
+  assert.ok(h.calls.remove.includes(key));
+  assert.equal(h.calls.mint, 1);
+});
+
+test("concurrent checks of the same accepted batch share one status and receipt request", async () => {
+  const h = createHarness();
+  const gate = deferred();
+  h.bindings.resolveSponsoredMintTransaction = async () => { h.calls.resolveBatch++; return gate.promise; };
+  const pending = sponsoredPending();
+  const first = h.flow.finalizeMintStorage(pending, true, { silent: true });
+  const second = h.flow.finalizeMintStorage(pending, true, { silent: true });
+  await eventually(() => h.calls.resolveBatch === 1, "batch lookup did not start");
+  gate.resolve(TX_A);
+  assert.deepEqual(await Promise.all([first, second]), [true, true]);
+  assert.equal(h.calls.resolveBatch, 1);
+  assert.equal(h.calls.confirm, 1);
+  assert.equal(h.calls.prepare, 0);
+  assert.equal(h.calls.mint, 0);
+  assert.equal(h.calls.fetch, 0);
 });

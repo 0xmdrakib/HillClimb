@@ -1,6 +1,22 @@
 # NFT storage and minting reliability
 
-## Latest incident: #243 (12 September 2026)
+## Current implementation — approved storage-before-mint flow
+
+The owner explicitly approved changing the order to **upload → verify both files → wallet mint**, accepting that already-uploaded files remain when the later wallet transaction is canceled. This supersedes the old no-upload-on-cancel requirement and the contingent recommendation recorded in the historical investigation below.
+
+The new `/api/nft/challenge` and `/api/nft/prepare` routes require a gas-free wallet signature over an expiring, server-authenticated run intent. It binds the wallet, metadata CID, token URI, score, driver, Base chain, contract and canonical app origin. Preparation validates the CAR and both exact files, uses the existing paid annual Lighthouse upload transport, then retrieves the image and metadata from the configured paid gateway with exact byte and MIME checks. Missing or mismatched content cannot yield a ready-to-mint response. The browser checks the short-lived result and current run/account again immediately before a wallet transaction request.
+
+After a submitted transaction, the application only checks the actual `RunMinted` event and presents its item link. It does not upload after mint, does not treat a subsequent storage error as a reverted transaction, and does not automatically recover old version-1/2 records. New version-3 pending records exist only to resume chain confirmation. Sponsored wallet batch IDs are saved as soon as the wallet acknowledges submission, before polling for a transaction hash; a failed status request must not enable a second mint. Batch checks use the original wallet account and never submit another batch. The local 960×540 landscape JPEG encoding, game physics and rotation are unchanged.
+
+No additional environment variables are introduced. The existing `NEXT_PUBLIC_URL` must be the canonical HTTPS app origin; `BASE_RPC_URL`, `NEXT_PUBLIC_RUNNFT_ADDRESS` and the paid-account `LIGHTHOUSE_API_KEY` must also be configured. The new path does not need `OPENSEA_API_KEY`. Rate/replay controls are warm-instance limits, not a distributed quota or proof of gameplay. An exposed signed endpoint cannot claim perfect anti-spam protection.
+
+This change prevents the application from submitting a mint when its required storage verification fails. It does not guarantee provider uptime after verification, enforce storage checks on direct calls to the unrestricted contract, repair prior immutable tokens, or guarantee marketplace indexing. Tests use local/mocked storage and wallet transports; no live upload, mint or old-token recovery was performed for this change.
+
+Validation for this implementation: 356 regression tests, TypeScript checking and the production build pass. Coverage includes fresh upload ordering, all four maps, missing or mismatched paid content, wallet cancellation, actual viem send boundaries, sponsored batch persistence, reload and run-change races. Focused lint passes for new storage/auth modules and tests; existing lint issues in the page and wallet modules were not expanded.
+
+## Historical investigation (before the approved ordering change)
+
+## Historical incident: #243 (12 September 2026)
 
 The annual-storage patch `91010c3` did **not** resolve the reported incident. At 08:19:18 UTC, #243's actual image was available from the paid gateway: HTTP 200, `image/jpeg`, 35,406 bytes, 960 × 540, with an exact raw-CID SHA-256 match. Its 726-byte metadata file was registered in the paid annual account, but its on-chain metadata URL still returned HTTP 404. Consequently the marketplace cannot discover either the NFT name or its otherwise available image. Do not change image geometry to address this missing JSON.
 
@@ -77,7 +93,7 @@ These observations follow the exact repository snapshots, including the original
 
 There is no map-specific upload implementation. `Terrain` changes a metadata attribute; Countryside, Desert, Arctic and Moon use the same package builder and finalizer. The current package builder is semantically unchanged from `b393790` for image encoding, filenames, flat CID structure, metadata name and delivery URLs. Rewriting those parts again has no demonstrated relationship to the missing #242 files.
 
-## Current Lighthouse integration
+## Audited Lighthouse integration
 
 The official upload documentation introduces `storageType: "annual"` in SDK 0.4.4. The versioned 0.4.7 implementation passes that selection as `X-Storage-Type`, uses bearer authentication, and sends multipart file content to `/api/v0/add`. Its Node implementation returns the provider response; it does not subsequently verify download availability.[^annual][^sdk]
 
@@ -97,7 +113,7 @@ The metadata keeps `name`, `description`, a paid HTTPS `image` URL and the six r
 
 IPFS documentation recommends provider-independent IPFS URIs for portability. This project intentionally uses its paid HTTPS host for primary delivery, with content-addressed provenance retained in metadata. That choice is supported by OpenSea, but availability remains dependent on the configured host. It must not silently switch to another delivery service.[^ipfs][^storage]
 
-## Transaction ordering and the required decision
+## Historical transaction-ordering decision
 
 The original application and Lighthouse's NFT tutorial both put storage before minting.[^tutorial] Adding exact paid-gateway verification to that ordering produces:
 
@@ -119,7 +135,7 @@ The recommended simple application flow is storage-and-verification before mint,
 
 Pre-mint preparation must not be a direct restoration of the old anonymously callable upload route. The current receipt requirement is an authorization and abuse-cost gate, not merely an ordering choice. Replacing it requires a narrowly scoped wallet-signed upload intent, expiry and replay controls, strict package validation and service-wide storage quotas. The existing rate-limit implementation only shares counters within a warm server instance; it is not a distributed quota. A wallet signature proves control of a wallet, not that the submitted image came from genuine gameplay. These limits must remain explicit rather than promising that an arbitrary caller cannot ever misuse an exposed preparation endpoint.
 
-## Bounded patch and remaining evidence gap
+## Earlier bounded patch and remaining evidence gap
 
 The accompanying code correction is restricted to the upload finalizer and its shared gateway configuration:
 

@@ -4,6 +4,7 @@ import {
   createPublicClient,
   createWalletClient,
   custom,
+  decodeEventLog,
   defineChain,
   encodeFunctionData,
   http,
@@ -25,6 +26,9 @@ import {
   primePaymasterServiceSupport,
   supportsPaymasterService,
   sendSponsoredCallsAndGetTxHash,
+  getSponsoredCallsTransactionHash,
+  SponsoredCallsFailedError,
+  SponsoredCallsPendingError,
 } from "@/lib/gasless";
 import { appendErc8021Suffix, ERC8021_DATA_SUFFIX } from "@/lib/builderCodes";
 
@@ -53,6 +57,8 @@ async function trySponsoredWriteContract(params: {
   abi: any;
   functionName: string;
   args: any[];
+  beforeSend?: () => void | Promise<void>;
+  onSubmitted?: (submission: { callsId: string }) => void | Promise<void>;
 }): Promise<`0x${string}` | null> {
   if (!isPaymasterServiceConfigured()) return null;
 
@@ -64,6 +70,11 @@ async function trySponsoredWriteContract(params: {
   });
   if (!supported) return null;
 
+  let guardFailed = false;
+  const beforeSend = params.beforeSend ? async () => {
+    try { await params.beforeSend!(); }
+    catch (error) { guardFailed = true; throw error; }
+  } : undefined;
   try {
     const data = appendErc8021Suffix(encodeFunctionData({
       abi: params.abi,
@@ -76,8 +87,15 @@ async function trySponsoredWriteContract(params: {
       chainIdHex: BASE_CHAIN_ID_HEX,
       from: params.from as `0x${string}`,
       calls: [{ to: params.to as `0x${string}`, value: "0x0", data }],
+      beforeSend,
+      onSubmitted: params.onSubmitted,
     });
   } catch (e) {
+    // A stale run/account/preparation is not a gasless provider error. Preserve
+    // the original typed guard failure so the UI cannot mistake it for a tx.
+    if (guardFailed) throw e;
+    if (e instanceof SponsoredCallsPendingError) throw e;
+    if (e instanceof SponsoredCallsFailedError) throw new TransactionRevertedError();
     // Ensure *one* wallet prompt total:
     // - If the wallet supports gasless, we do NOT fall back to a second onchain prompt if sponsorship fails.
     // - If the user rejects, we surface that rejection.
@@ -156,7 +174,7 @@ export async function connectWallet(
   return { provider, address: r0 as Address };
 }
 
-type ConnectedWallet = { provider: Eip1193Provider; address: Address };
+export type ConnectedWallet = { provider: Eip1193Provider; address: Address };
 let cachedWallet: ConnectedWallet | null = null;
 
 function primePaymasterCapability(wallet: ConnectedWallet) {
@@ -214,6 +232,20 @@ function getWalletClient(provider: Eip1193Provider, address: Address) {
   });
 }
 
+export async function assertNftWalletAccount(wallet: ConnectedWallet): Promise<void> {
+  const accounts = await getAccounts(wallet.provider);
+  if (accounts[0]?.toLowerCase() !== wallet.address.toLowerCase()) {
+    throw new Error("NFT wallet account changed");
+  }
+}
+
+/** An upload authorization only; this does not submit a chain transaction. */
+export async function signNftUploadMessage(message: string, wallet: ConnectedWallet): Promise<`0x${string}`> {
+  await ensureBaseMainnet(wallet.provider);
+  await assertNftWalletAccount(wallet);
+  return getWalletClient(wallet.provider, wallet.address).signMessage({ message });
+}
+
 export async function readBestMeters(scoreboardAddress: string, playerAddress: string): Promise<bigint> {
   if (!scoreboardAddress) return 0n;
 
@@ -269,9 +301,17 @@ export async function mintRunNft(
   driverId: number,
   tokenUri: string,
   wallet?: ConnectedWallet,
+  beforeSend?: () => void | Promise<void>,
+  onSubmitted?: (submission: { callsId: string }) => void | Promise<void>,
 ): Promise<string> {
   const { provider, address } = wallet ?? (await getOrConnectWallet());
   await ensureBaseMainnet(provider);
+  const guardBeforeSend = async () => {
+    // Chain switching and capability detection may await wallet interaction.
+    // Recheck the real account and caller's run/expiry at the send boundary.
+    await assertNftWalletAccount({ provider, address });
+    await beforeSend?.();
+  };
 
   const m = BigInt(Math.max(0, Math.floor(meters)));
   const did = Math.max(0, Math.min(255, Math.floor(driverId)));
@@ -283,10 +323,26 @@ export async function mintRunNft(
     abi: runNftAbi,
     functionName: "mintRun",
     args: [m, did, tokenUri],
+    beforeSend: guardBeforeSend,
+    onSubmitted,
   });
   if (sponsored) return String(sponsored);
 
-  const client = getWalletClient(provider, address);
+  let sendGuardFailed = false;
+  let sendGuardFailure: unknown;
+  const guardedProvider: Eip1193Provider = {
+    request: async (request) => {
+      if (request.method === "eth_sendTransaction" || request.method === "wallet_sendTransaction") {
+        // Viem itself awaits eth_chainId and can fall back between these two
+        // methods. Guard the final provider boundary after those awaits too.
+        if (sendGuardFailed) throw sendGuardFailure;
+        try { await guardBeforeSend(); }
+        catch (error) { sendGuardFailed = true; sendGuardFailure = error; throw error; }
+      }
+      return provider.request(request);
+    },
+  };
+  const client = getWalletClient(guardedProvider, address);
 
   const data = appendErc8021Suffix(
     encodeFunctionData({
@@ -296,15 +352,39 @@ export async function mintRunNft(
     }) as `0x${string}`,
   );
 
-  const hash = await client.sendTransaction({
-    to: runNftAddress as Address,
-    data,
-  });
-
-  return String(hash);
+  await guardBeforeSend();
+  try {
+    const hash = await client.sendTransaction({
+      to: runNftAddress as Address,
+      data,
+    });
+    return String(hash);
+  } catch (error) {
+    // Viem wraps provider errors; preserve the caller's preparation error class.
+    if (sendGuardFailed) throw sendGuardFailure;
+    throw error;
+  }
 }
 
-export async function waitForBaseTransaction(transactionHash: string): Promise<string> {
+/** Resolve an accepted NFT batch without reconnecting, resending, or uploading. */
+export async function resolveSponsoredMintTransaction(
+  callsId: string,
+  walletAddress: string,
+  wallet?: ConnectedWallet,
+): Promise<string> {
+  if (!wallet || wallet.address.toLowerCase() !== walletAddress.toLowerCase()) {
+    throw new SponsoredCallsPendingError(callsId);
+  }
+  try {
+    await assertNftWalletAccount(wallet);
+    return await getSponsoredCallsTransactionHash(wallet.provider, callsId);
+  } catch (error) {
+    if (error instanceof SponsoredCallsFailedError) throw new TransactionRevertedError();
+    throw new SponsoredCallsPendingError(callsId);
+  }
+}
+
+async function waitForBaseReceipt(transactionHash: string) {
   let replacementReason: "cancelled" | "replaced" | "repriced" | null = null;
   const receipt = await publicClient.waitForTransactionReceipt({
     hash: transactionHash as `0x${string}`,
@@ -316,7 +396,36 @@ export async function waitForBaseTransaction(transactionHash: string): Promise<s
   if (receipt.status !== "success" || replacementReason === "cancelled" || replacementReason === "replaced") {
     throw new TransactionRevertedError();
   }
-  return receipt.transactionHash;
+  return receipt;
+}
+
+export async function waitForBaseTransaction(transactionHash: string): Promise<string> {
+  return (await waitForBaseReceipt(transactionHash)).transactionHash;
+}
+
+/** Confirm a prepared NFT from its actual event, without any storage request. */
+export async function confirmPreparedRunNft(
+  transactionHash: string,
+  contract: string,
+  tokenUri: string,
+  checkOnly = false,
+): Promise<{ txHash: string; openSeaUrl: string }> {
+  const receipt = checkOnly
+    ? await publicClient.getTransactionReceipt({ hash: transactionHash as `0x${string}` })
+    : await waitForBaseReceipt(transactionHash);
+  if (receipt.status !== "success") throw new TransactionRevertedError();
+  for (const log of receipt.logs) {
+    if (log.address.toLowerCase() !== contract.toLowerCase()) continue;
+    try {
+      const decoded = decodeEventLog({ abi: runNftAbi, data: log.data, topics: log.topics });
+      if (decoded.eventName !== "RunMinted" || decoded.args.tokenURI !== tokenUri) continue;
+      return {
+        txHash: receipt.transactionHash,
+        openSeaUrl: `https://opensea.io/item/base/${contract}/${decoded.args.tokenId.toString()}`,
+      };
+    } catch { /* Other contract events do not confirm this NFT. */ }
+  }
+  throw new TransactionRevertedError();
 }
 
 export class TransactionRevertedError extends Error {

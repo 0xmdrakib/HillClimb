@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "test:nft": "node --test scripts/test-mint-flow.mjs scripts/test-nft-finalize.mjs scripts/test-nft-package.mjs scripts/test-lighthouse-upload-transport.mjs",
+    "test:nft": "node --test scripts/test-mint-flow.mjs scripts/test-nft-finalize.mjs scripts/test-nft-package.mjs scripts/test-lighthouse-upload-transport.mjs scripts/test-nft-prepare.mjs scripts/test-nft-preparation-client.mjs scripts/test-nft-confirmation.mjs",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix"
   },
