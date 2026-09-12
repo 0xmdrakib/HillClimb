@@ -1,10 +1,38 @@
 # NFT storage and minting reliability
 
-## Findings
+## Latest incident: #243 (12 September 2026)
+
+The annual-storage patch `91010c3` did **not** resolve the reported incident. At 08:19:18 UTC, #243's actual image was available from the paid gateway: HTTP 200, `image/jpeg`, 35,406 bytes, 960 × 540, with an exact raw-CID SHA-256 match. Its 726-byte metadata file was registered in the paid annual account, but its on-chain metadata URL still returned HTTP 404. Consequently the marketplace cannot discover either the NFT name or its otherwise available image. Do not change image geometry to address this missing JSON.
+
+| #243 evidence | Observation |
+|---|---|
+| Successful mint transaction | `0x3a1146afdbb281c0cc0ac3bf042a8d7bdf43ad5bb2f0629eac421c605d7843a3`, Base block 51205491, 08:05:29 UTC |
+| First finalizer request | `l8x8r-1789200328816-e208994f3b48`, 08:05:28.816 UTC, 6.40 seconds execution, HTTP 202 |
+| Deployed build | `dpl_9tSNhKJmmBubfBspC97nNM7ESVcj`, annual-storage patch |
+| Request trace | Receipt RPC, two Lighthouse upload POSTs, then paid-host GETs for both exact CIDs |
+| Paid account | Metadata CID listed in annual storage; `metadata.json`, 726 bytes, unencrypted |
+| Image | [Exact paid image](https://protective-walrus-h5noy.lighthouseweb3.xyz/ipfs/bafkreicaelvlgvveaapgoc3amlbsj4jvql7qtk52a3qjfzjhkdnx7szczu), 200 and verified |
+| Metadata | [Exact on-chain paid metadata](https://protective-walrus-h5noy.lighthouseweb3.xyz/ipfs/bafkreiav6mkurg7ujycn4cf5dl2nqhz6sd5lket25gyspvr2rxzaeousde), 404 |
+
+At 08:21:34 UTC, the canonical metadata GET, documented `?format=raw` retrieval, and `?filename=metadata.json` all returned the same 273-byte missing-block/no-providers error, with `cf-cache-status: DYNAMIC`. This supplies no evidence for a MIME/representation-only problem. These are read-only observations, not uploads or attempts to recover an existing NFT.
+
+The trace does **not** expose raw upload response bodies or HTTP trailers. Reaching the gateway checks proves only that the old application parser accepted both upload responses; it does not prove that those responses were free of late errors. The provider-side reason this registered metadata block is unavailable remains unknown. Do not label this an OpenSea defect, assume the annual header fixed it, or claim the response hardening below makes #243 available.
+
+### Verified code defect and bounded correction
+
+The previous parser discarded malformed NDJSON lines and ignored error records whenever another record contained the expected `Hash`. Kubo can also signal failure after HTTP 200 in the `X-Stream-Error` response trailer; its own client checks that trailer after reading the body.[^stream-errors] Native Fetch does not expose trailers, whereas Node's `IncomingMessage.trailers` is populated at the response's `end` event.[^trailers]
+
+The correction rejects malformed/error records and uses an upload-only Node HTTPS transport that consumes the complete bounded response and checks actual error trailers. Merely declaring `Trailer: X-Stream-Error` is not an error. Native FormData still constructs the multipart body; filenames, MIME types, file bytes, CID/pinning query, bearer authentication and annual-storage selection stay unchanged. There is no redirect, automatic upload retry, new gateway, mint-order change or image re-encoding. Timeouts retain the existing pending response, and exact paid-byte verification remains mandatory for success.
+
+Server-only logs now distinguish upload stage, allowlisted failure reason and HTTP status from unavailable delivery. They do not contain API keys, request packages, artwork, response bodies or arbitrary provider error messages. This is necessary operational evidence, not a substitute for resolving missing metadata.
+
+Validation: 131 local regression tests pass, including real loopback HTTP trailers, multipart byte round trips, partial responses, timeouts, malformed JSON and image-versus-metadata failure logging. The production build and focused lint for changed code pass. Repository-wide lint still reports 61 errors and 22 warnings in untouched code. No actual Lighthouse upload, NFT mint or recovery was performed during this investigation. The corrected error recognition is verified locally; #243's metadata availability is still unresolved.
+
+## Findings from the preceding #242 investigation
 
 The missing name and missing image are linked failures: OpenSea needs the JSON returned by the contract's `tokenURI` before it can discover either field. Token #242 currently points to the correct paid Lighthouse host, but that metadata URL returns HTTP 404. Renaming the NFT, changing its aspect ratio, or requesting a marketplace refresh cannot supply an unavailable JSON file.[^opensea]
 
-There are two separate reliability problems. First, the current application mints before it uploads; a successful transaction therefore does not establish successful storage. Second, #242's specific request received matching CIDs from both Lighthouse uploads, yet the paid gateway still could not retrieve the files. The first problem is established by the code. The second is established by production evidence, but the reason for accepted-but-unavailable files remains unproven.
+There are two separate reliability problems. First, the current application mints before it uploads; a successful transaction therefore does not establish successful storage. Second, #242's specific request passed the prior parser's matching-CID checks for both Lighthouse uploads, yet the paid gateway still could not retrieve the files. The first problem is established by the code. The second is established by production evidence, but the reason for accepted-but-unavailable files remains unproven.
 
 The upload integration also omitted the documented `X-Storage-Type: annual` header. Explicit annual storage selection is a justified correction for this subscription. It is not evidence, by itself, that #242 failed because the header was absent.[^annual]
 
@@ -20,7 +48,7 @@ Observations are from 12 September 2026. The contract is `0x6362da72665385a43791
 | #242 on-chain URI | Exact configured paid host | This token's failure is not an incorrect delivery hostname |
 | #242 metadata | HTTP 404, `text/plain; charset=utf-8` | No readable NFT JSON at its on-chain address |
 | #242 earlier image retrieval | HTTP 404 | The problem is not only marketplace indexing |
-| #242 upload responses | Both successful with expected CIDs | Both upload requests ran and were accepted |
+| #242 upload responses | Both passed the prior matching-CID parser | Both upload requests ran; this does not exclude unobserved late errors |
 | #242 authenticated account file list | Both exact CIDs listed | Registration occurred in the intended paid account |
 | #242 first finalization request | 6.93 seconds, HTTP 202 | The observed request did not exhaust the upload or overall time limit |
 
@@ -121,3 +149,5 @@ The remaining gap is not another font, map or aspect-ratio change: it is success
 [^media]: OpenSea, [Media and traits](https://docs.opensea.io/docs/media-and-traits), current documentation, accessed 12 September 2026. Image and background-color fields.
 [^ipfs]: IPFS, [Best practices for storing NFT data using IPFS](https://docs.ipfs.tech/how-to/best-practices-for-nft-data/), accessed 12 September 2026. Content addressing, portability and metadata structure. Its JavaScript examples are explicitly marked outdated; they are not implementation templates for this patch.
 [^tutorial]: Lighthouse, [Minting NFTs on EVM Chains](https://docs.lighthouse.storage/tutorials/minting-nfts-on-evm-chains), accessed 12 September 2026. Image and metadata upload precede minting. The tutorial contains legacy testnet and library examples; only its storage ordering and metadata relationship are applicable here.
+[^stream-errors]: IPFS, [Kubo RPC response semantics](https://docs.ipfs.tech/reference/kubo/rpc/), and official [response emitter](https://github.com/ipfs/go-ipfs-cmds/blob/master/http/responseemitter.go) / [response reader](https://github.com/ipfs/go-ipfs-cmds/blob/master/http/response.go), accessed 12 September 2026. Streaming HTTP 200 can be followed by a late error trailer.
+[^trailers]: Node.js, [IncomingMessage.trailers](https://nodejs.org/api/http.html#messagetrailers), and WHATWG, [Fetch Response interface](https://fetch.spec.whatwg.org/#response-class), accessed 12 September 2026.

@@ -14,12 +14,12 @@ import { after, NextResponse } from "next/server";
 import {
   enforceRateLimit,
   readBodyWithLimit,
-  readResponseWithLimit,
   requestTooLargeResponse,
   RequestBodyTooLargeError,
 } from "@/lib/apiProtection";
 import { runNftAbi } from "@/lib/onchainAbi";
 import { LIGHTHOUSE_DELIVERY_GATEWAY } from "@/lib/nftGateway";
+import { LighthouseUploadError, uploadLighthouseForm } from "@/lib/lighthouseUploadTransport";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -444,24 +444,53 @@ function scheduleMarketplaceFinalization(
 type UploadFile = { bytes: Uint8Array; name: string; type: string };
 
 function lighthouseHashes(responseText: string): string[] {
-  const records: unknown[] = [];
+  let records: unknown;
   try {
-    const parsed = JSON.parse(responseText);
-    if (Array.isArray(parsed)) records.push(...parsed);
-    else records.push(parsed);
+    records = JSON.parse(responseText);
   } catch {
-    for (const line of responseText.split(/\r?\n/).filter(Boolean)) {
-      try { records.push(JSON.parse(line)); } catch { /* Ignore a malformed line. */ }
+    // The add endpoint may stream NDJSON. Every nonblank record must parse:
+    // an earlier Hash does not make a truncated or failed stream successful.
+    const lines = responseText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    if (!lines.length) throw new Error("invalid_lighthouse_response");
+    try {
+      records = lines.map((line) => JSON.parse(line));
+    } catch {
+      throw new Error("invalid_lighthouse_response");
     }
   }
   const hashes: string[] = [];
-  const collect = (value: unknown) => {
-    if (Array.isArray(value)) { for (const item of value) collect(item); return; }
-    if (!isRecord(value)) return;
-    if (typeof value.Hash === "string") hashes.push(value.Hash);
-    if ("data" in value) collect(value.data);
+  const collect = (value: unknown, depth = 0) => {
+    if (depth > 32) throw new Error("invalid_lighthouse_response");
+    if (Array.isArray(value)) {
+      if (!value.length) throw new Error("invalid_lighthouse_response");
+      for (const item of value) collect(item, depth + 1);
+      return;
+    }
+    if (!isRecord(value)) throw new Error("invalid_lighthouse_response");
+    if (
+      "error" in value || "Error" in value || value.success === false ||
+      (typeof value.Type === "string" && value.Type.toLowerCase() === "error") ||
+      (typeof value.type === "string" && value.type.toLowerCase() === "error") ||
+      ("Message" in value && "Code" in value)
+    ) throw new Error("lighthouse_upload_failed");
+
+    const hasHash = "Hash" in value;
+    const hasData = "data" in value;
+    if (hasHash) {
+      if (typeof value.Hash !== "string" || !value.Hash) throw new Error("invalid_lighthouse_response");
+      try { CID.parse(value.Hash); }
+      catch { throw new Error("invalid_lighthouse_response"); }
+      hashes.push(value.Hash);
+    }
+    if (hasData) collect(value.data, depth + 1);
+    // Kubo may emit progress before the completed file record. Progress alone
+    // is never acceptance; unknown/empty envelopes are not ignored either.
+    const isProgress = typeof value.Name === "string" &&
+      typeof value.Bytes === "number" && Number.isFinite(value.Bytes) && value.Bytes >= 0;
+    if (!hasHash && !hasData && !isProgress) throw new Error("invalid_lighthouse_response");
   };
-  for (const record of records) collect(record);
+  collect(records);
+  if (!hashes.length) throw new Error("invalid_lighthouse_response");
   return hashes;
 }
 
@@ -485,21 +514,12 @@ async function uploadFiles(
     pin: "true",
     "wrap-with-directory": String(wrapWithDirectory),
   });
-  const upstream = await fetch(`${LIGHTHOUSE_FILE_UPLOAD_URL}?${params.toString()}`, {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${apiKey}`,
-      // Match Lighthouse's paid Filecoin uploader. The API key identifies the
-      // account; this header selects its subscription storage for both files.
-      "X-Storage-Type": "annual",
-    },
-    body: formData,
-    redirect: "error",
-    cache: "no-store",
-    signal: AbortSignal.timeout(boundedTimeout(deadlineAt, UPLOAD_TIMEOUT_MS)),
+  const responseText = await uploadLighthouseForm({
+    url: `${LIGHTHOUSE_FILE_UPLOAD_URL}?${params.toString()}`,
+    formData,
+    apiKey,
+    timeoutMs: boundedTimeout(deadlineAt, UPLOAD_TIMEOUT_MS),
   });
-  const responseText = await readResponseWithLimit(upstream, 64_000);
-  if (!upstream.ok) throw new Error("lighthouse_upload_failed");
   const uploadedCids = lighthouseHashes(responseText);
   try {
     if (!uploadedCids.some((uploadedCid) => CID.parse(uploadedCid).equals(CID.parse(expectedRoot)))) {
@@ -597,10 +617,12 @@ export async function POST(request: Request) {
   const alreadyStored = Boolean(deliveryAssets);
 
   if (!deliveryAssets) {
+    let uploadStage: "image" | "metadata" | "directory" = "image";
     try {
       const imageFile = { bytes: archive.imageBytes, name: "run.jpg", type: "image/jpeg" };
       const metadataFile = { bytes: archive.metadataBytes, name: "metadata.json", type: "application/json" };
       if (archive.isLegacyDirectoryPackage) {
+        uploadStage = "directory";
         await uploadFiles(apiKey, [imageFile, metadataFile], rootCid, true, deadlineAt);
       } else {
         // The token URI and image URI point to these exact raw file CIDs. Using
@@ -610,10 +632,22 @@ export async function POST(request: Request) {
         // Keep the proven flat two-CID structure. Store the artwork first and its
         // metadata second, both under the same server-only Lighthouse account.
         await uploadFiles(apiKey, [imageFile], archive.imageCid, false, deadlineAt);
+        uploadStage = "metadata";
         await uploadFiles(apiKey, [metadataFile], rootCid, false, deadlineAt);
       }
     } catch (error) {
       const reason = error instanceof Error ? error.message : "lighthouse_upload_failed";
+      // Keep operational evidence server-side. Never log a request/package,
+      // credential, response body, or arbitrary upstream error message.
+      console.warn("nft_upload_failed", {
+        tokenId: mint.tokenId.toString(),
+        stage: uploadStage,
+        reason: error instanceof LighthouseUploadError ? error.reason
+          : ["invalid_lighthouse_response", "lighthouse_cid_mismatch", "finalize_deadline"].includes(reason)
+            ? reason : "upload_error",
+        ...(error instanceof LighthouseUploadError && error.statusCode
+          ? { statusCode: error.statusCode } : {}),
+      });
       if (
         reason === "finalize_deadline" ||
         (error instanceof Error && ["AbortError", "TimeoutError"].includes(error.name))
@@ -636,7 +670,14 @@ export async function POST(request: Request) {
       deadlineAt,
     );
   }
-  if (!deliveryAssets) return jsonPending("nft_storage_pending");
+  if (!deliveryAssets) {
+    console.warn("nft_delivery_unavailable", {
+      tokenId: mint.tokenId.toString(),
+      metadataCid: rootCid,
+      imageCid: archive.imageCid,
+    });
+    return jsonPending("nft_storage_pending");
+  }
 
   // A successful response now means both immutable files were fetched back and
   // byte-verified. Only then refresh the marketplace and clear client pending data.

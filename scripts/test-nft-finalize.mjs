@@ -150,6 +150,9 @@ function createHarness() {
     uploaded: new Map(),
     uploadedTypes: new Map(),
     uploads: [],
+    uploadResponseFactory: null,
+    transportFailure: null,
+    logs: [],
   };
 
   const env = {
@@ -224,6 +227,9 @@ function createHarness() {
         state.mismatchNextUpload = false;
         returnedCid = (await encodeFile(Uint8Array.from([9, 8, 7]), "other.bin", "application/octet-stream")).cid;
       }
+      if (state.uploadResponseFactory) {
+        return state.uploadResponseFactory({ cid: returnedCid, name: file.name, bytes });
+      }
       return Response.json({ Hash: returnedCid });
     }
 
@@ -232,7 +238,38 @@ function createHarness() {
     throw new Error(`Unexpected external fetch in hermetic test: ${url}`);
   }
 
+  class MockLighthouseUploadError extends Error {
+    constructor(reason, statusCode) {
+      super("lighthouse_upload_failed");
+      this.name = reason === "timeout" ? "TimeoutError" : "LighthouseUploadError";
+      this.reason = reason;
+      this.statusCode = statusCode;
+    }
+  }
   const externalModules = new Map([
+    // Socket/trailer behavior is exercised separately by the transport suite.
+    // Here the boundary stays mocked so receipt, archive, parser, and delivery
+    // tests cannot send paid uploads or contact any real gateway.
+    ["@/lib/lighthouseUploadTransport", {
+      LighthouseUploadError: MockLighthouseUploadError,
+      uploadLighthouseForm: async ({ url, formData, apiKey, timeoutMs }) => {
+        assert.equal(apiKey, env.LIGHTHOUSE_API_KEY);
+        assert.ok(timeoutMs > 0 && timeoutMs <= 12_000);
+        if (state.transportFailure) {
+          throw new MockLighthouseUploadError(state.transportFailure.reason, state.transportFailure.statusCode);
+        }
+        const upstream = await mockedFetch(url, {
+          method: "POST",
+          headers: { authorization: `Bearer ${apiKey}`, "X-Storage-Type": "annual" },
+          body: formData,
+          redirect: "error",
+        });
+        const { readResponseWithLimit } = loadTypeScriptModule(path.join(PROJECT_ROOT, "lib", "apiProtection.ts"));
+        const text = await readResponseWithLimit(upstream, 64_000);
+        if (!upstream.ok) throw new Error("lighthouse_upload_failed");
+        return text;
+      },
+    }],
     ["@ipld/car", IpldCar],
     ["ipfs-car", IpfsCar],
     ["ipfs-unixfs-exporter", UnixfsExporter],
@@ -259,6 +296,7 @@ function createHarness() {
     AbortSignal,
     Blob,
     Buffer,
+    Error,
     FormData,
     Headers,
     ReadableStream,
@@ -272,7 +310,7 @@ function createHarness() {
     Uint8Array,
     WritableStream,
     clearTimeout,
-    console,
+    console: { ...console, warn: (...args) => state.logs.push(args) },
     fetch: mockedFetch,
     process: { env },
     setTimeout: (callback, _delay, ...args) => setTimeout(callback, 0, ...args),
@@ -337,6 +375,9 @@ function createHarness() {
     state.uploaded.clear();
     state.uploadedTypes.clear();
     state.uploads.length = 0;
+    state.uploadResponseFactory = null;
+    state.transportFailure = null;
+    state.logs.length = 0;
   }
 
   function receiptFor(nftPackage, tokenId = 1n, status = "success") {
@@ -384,6 +425,142 @@ function createHarness() {
 }
 
 const harness = createHarness();
+
+test("Lighthouse upload response parsing rejects incomplete or failed streams", async (t) => {
+  const sensitiveMessage = "provider-detail-must-not-reach-client test-lighthouse-key";
+  const successRecord = ({ cid, name, bytes }) => ({ Name: name, Hash: cid, Size: String(bytes.length) });
+  for (const [index, reason] of ["timeout", "stream_error"].entries()) {
+    await t.test(`typed transport ${reason} retains its route status and safe diagnosis`, async () => {
+      const responseHarness = createHarness();
+      const nftPackage = await buildFlatPackage({ terrain: "Moon", seed: 125 + index });
+      const txHash = transactionHash(355 + index);
+      responseHarness.state.receipts.set(txHash, responseHarness.receiptFor(nftPackage));
+      responseHarness.state.transportFailure = { reason, statusCode: 200 };
+      const { body, response } = await responseHarness.invoke(nftPackage, txHash);
+      assert.equal(response.status, reason === "timeout" ? 202 : 502);
+      assert.equal(body.error, reason === "timeout" ? "nft_storage_pending" : "lighthouse_upload_failed");
+      assert.equal(body.ok, reason === "timeout" ? false : undefined);
+      assert.equal(responseHarness.state.logs[0][1].reason, reason);
+      assert.equal(responseHarness.state.logs[0][1].statusCode, 200);
+      assert.equal(responseHarness.state.gatewayRequests.length, 0);
+      assert.equal(responseHarness.state.afterTasks.length, 0);
+    });
+  }
+  const validResponses = [
+    ["single JSON record", (file) => JSON.stringify(successRecord(file))],
+    ["data wrapper", (file) => JSON.stringify({ data: successRecord(file) })],
+    ["JSON array", (file) => JSON.stringify([successRecord(file)])],
+    ["nested data arrays", (file) => JSON.stringify({ data: [{ data: [successRecord(file)] }] })],
+    ["pretty-printed JSON", (file) => JSON.stringify({ data: successRecord(file) }, null, 2)],
+    ["NDJSON with blank lines", (file) => `\n${JSON.stringify(successRecord(file))}\r\n \n`],
+    ["NDJSON progress followed by hash", (file) => `${JSON.stringify({ Name: file.name, Bytes: file.bytes.length })}\n${JSON.stringify(successRecord(file))}\n`],
+  ];
+
+  for (const [index, [name, encode]] of validResponses.entries()) {
+    await t.test(`accepts ${name}`, async () => {
+      const responseHarness = createHarness();
+      const nftPackage = await buildFlatPackage({ terrain: "Desert", seed: 70 + index });
+      const txHash = transactionHash(300 + index);
+      responseHarness.state.receipts.set(txHash, responseHarness.receiptFor(nftPackage));
+      responseHarness.state.uploadResponseFactory = (file) => new Response(encode(file), { status: 200 });
+
+      const { body, response } = await responseHarness.invoke(nftPackage, txHash);
+
+      assert.equal(response.status, 200);
+      assert.equal(body.ok, true);
+      assert.equal(body.availability, "verified");
+      assert.equal(responseHarness.state.uploads.length, 2);
+    });
+  }
+
+  const invalidResponses = [
+    ["trailing malformed JSON", (file) => `${JSON.stringify(successRecord(file))}\n{\"Message\":`, "invalid_lighthouse_response"],
+    ["leading malformed JSON", (file) => `not-json\n${JSON.stringify(successRecord(file))}`, "invalid_lighthouse_response"],
+    ["trailing error record", (file) => `${JSON.stringify(successRecord(file))}\n${JSON.stringify({ Message: sensitiveMessage, Code: 0, Type: "error" })}`, "lighthouse_upload_failed"],
+    ["leading error record", (file) => `${JSON.stringify({ error: sensitiveMessage })}\n${JSON.stringify(successRecord(file))}`, "lighthouse_upload_failed"],
+    ["same-record error", (file) => JSON.stringify({ ...successRecord(file), error: sensitiveMessage }), "lighthouse_upload_failed"],
+    ["same-record Error", (file) => JSON.stringify({ ...successRecord(file), Error: sensitiveMessage }), "lighthouse_upload_failed"],
+    ["same-record false success", (file) => JSON.stringify({ ...successRecord(file), success: false }), "lighthouse_upload_failed"],
+    ["same-record Type error", (file) => JSON.stringify({ ...successRecord(file), Type: "error", Message: sensitiveMessage }), "lighthouse_upload_failed"],
+    ["nested data error after hash", (file) => JSON.stringify({ data: [successRecord(file), { data: [{ Error: sensitiveMessage }] }] }), "lighthouse_upload_failed"],
+    ["nested false success envelope", (file) => JSON.stringify({ data: { success: false, data: successRecord(file) } }), "lighthouse_upload_failed"],
+    ["matching hash followed by malformed hash", (file) => JSON.stringify([successRecord(file), { Hash: "not-a-cid" }]), "invalid_lighthouse_response"],
+    ["matching hash followed by unknown envelope", (file) => JSON.stringify([successRecord(file), { unexpected: true }]), "invalid_lighthouse_response"],
+    ["matching hash with empty data envelope", (file) => JSON.stringify({ ...successRecord(file), data: [] }), "invalid_lighthouse_response"],
+    ["empty body", () => " \n\t", "invalid_lighthouse_response"],
+    ["empty object", () => "{}", "invalid_lighthouse_response"],
+    ["empty array", () => "[]", "invalid_lighthouse_response"],
+    ["null body", () => "null", "invalid_lighthouse_response"],
+    ["unknown envelope", (file) => JSON.stringify({ result: successRecord(file) }), "invalid_lighthouse_response"],
+    ["empty data", () => JSON.stringify({ data: [] }), "invalid_lighthouse_response"],
+    ["progress without completed hash", (file) => JSON.stringify({ Name: file.name, Bytes: file.bytes.length }), "invalid_lighthouse_response"],
+  ];
+
+  for (const [index, [name, encode, expectedError]] of invalidResponses.entries()) {
+    await t.test(`rejects ${name}`, async () => {
+      const responseHarness = createHarness();
+      const nftPackage = await buildFlatPackage({ terrain: "Moon", seed: 90 + index });
+      const txHash = transactionHash(320 + index);
+      responseHarness.state.receipts.set(txHash, responseHarness.receiptFor(nftPackage));
+      responseHarness.state.uploadResponseFactory = (file) => new Response(encode(file), { status: 200 });
+
+      const { body, response } = await responseHarness.invoke(nftPackage, txHash);
+
+      assert.equal(response.status, 502);
+      assert.deepEqual(body, { error: expectedError });
+      assert.equal(responseHarness.state.uploads.length, 1, "do not continue after an invalid artwork upload response");
+      assert.equal(responseHarness.state.gatewayRequests.length, 0);
+      assert.equal(responseHarness.state.afterTasks.length, 0);
+      assert.equal(JSON.stringify(body).includes(sensitiveMessage), false);
+      assert.equal(JSON.stringify(responseHarness.state.logs).includes(sensitiveMessage), false);
+      assert.equal(JSON.stringify(responseHarness.state.logs).includes("test-lighthouse-key"), false);
+      assert.equal(responseHarness.state.logs[0][0], "nft_upload_failed");
+      assert.equal(responseHarness.state.logs[0][1].stage, "image");
+    });
+  }
+
+  await t.test("rejects a failed response body read without exposing upstream details", async () => {
+    const responseHarness = createHarness();
+    const nftPackage = await buildFlatPackage({ terrain: "Arctic", seed: 120 });
+    const txHash = transactionHash(350);
+    responseHarness.state.receipts.set(txHash, responseHarness.receiptFor(nftPackage));
+    responseHarness.state.uploadResponseFactory = () => new Response(new ReadableStream({
+      start(controller) { controller.error(new Error(sensitiveMessage)); },
+    }), { status: 200 });
+
+    const { body, response } = await responseHarness.invoke(nftPackage, txHash);
+
+    assert.equal(response.status, 502);
+    assert.deepEqual(body, { error: "lighthouse_upload_failed" });
+    assert.equal(responseHarness.state.uploads.length, 1);
+    assert.equal(responseHarness.state.gatewayRequests.length, 0);
+    assert.equal(responseHarness.state.afterTasks.length, 0);
+    assert.equal(JSON.stringify(responseHarness.state.logs).includes(sensitiveMessage), false);
+  });
+
+  await t.test("metadata stream error is distinct from an accepted image upload", async () => {
+    const responseHarness = createHarness();
+    const nftPackage = await buildFlatPackage({ terrain: "Desert", seed: 121 });
+    const txHash = transactionHash(351);
+    responseHarness.state.receipts.set(txHash, responseHarness.receiptFor(nftPackage));
+    responseHarness.state.uploadResponseFactory = (file) => new Response(
+      file.name === "metadata.json"
+        ? `${JSON.stringify(successRecord(file))}\n${JSON.stringify({ Error: sensitiveMessage })}`
+        : JSON.stringify(successRecord(file)),
+      { status: 200 },
+    );
+
+    const { body, response } = await responseHarness.invoke(nftPackage, txHash);
+
+    assert.equal(response.status, 502);
+    assert.deepEqual(body, { error: "lighthouse_upload_failed" });
+    assert.equal(responseHarness.state.uploads.length, 2);
+    assert.equal(responseHarness.state.gatewayRequests.length, 0);
+    assert.equal(responseHarness.state.afterTasks.length, 0);
+    assert.equal(responseHarness.state.logs[0][1].stage, "metadata");
+    assert.equal(JSON.stringify(responseHarness.state.logs).includes(sensitiveMessage), false);
+  });
+});
 
 test("NFT finalizer route hermetic regression suite", async (t) => {
   const maps = ["Countryside", "Desert", "Arctic", "Moon"];
